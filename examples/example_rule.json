@@ -1,0 +1,22 @@
+{
+  "rules": [
+    {
+      "id": "net_income_001",
+      "name": "提取净收入金额",
+      "scope": "第一章 第三节",
+      "keywords": ["利润", "净收入"],
+      "extract_type": "value",
+      "target": "净收入金额",
+      "priority": 1
+    },
+    {
+      "id": "income_table_001",
+      "name": "提取利润表格",
+      "scope": "第一章 第三节",
+      "keywords": ["利润", "净收入"],
+      "extract_type": "table",
+      "target": "利润表格",
+      "priority": 2
+    }
+  ]
+}

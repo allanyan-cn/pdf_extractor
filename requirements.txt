@@ -1,0 +1,10 @@
+# Runtime dependencies
+pymupdf>=1.27,<2
+pdfplumber>=0.11,<1
+
+# Optional LLM fallback
+openai>=2,<3
+
+# Development and test dependencies
+pytest>=9,<10
+pytest-cov>=7,<8

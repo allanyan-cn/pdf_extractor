@@ -840,6 +840,31 @@ print(results)
 
 必须包含基础单元测试。
 
+每次执行测试时，都必须输出详尽的测试报告，便于人工检查。至少生成：
+
+- 终端中的逐项测试结果和失败详情。
+- JUnit XML 格式的测试报告：`reports/junit.xml`。
+- 终端中的覆盖率报告，包含未覆盖行号。
+- HTML 格式的覆盖率报告：`reports/coverage/index.html`。
+
+统一使用以下命令执行完整测试：
+
+```bash
+python -m pytest -vv \
+  --junitxml=reports/junit.xml \
+  --cov=pdf_extractor \
+  --cov-report=term-missing \
+  --cov-report=html:reports/coverage
+```
+
+提交测试结果时，需要说明：
+
+- 测试命令。
+- 通过、失败、跳过的测试数量。
+- 总体覆盖率。
+- 报告文件路径。
+- 如果有失败或跳过测试，逐项说明原因。
+
 ### 12.1 PDF Parser 测试
 
 验证：

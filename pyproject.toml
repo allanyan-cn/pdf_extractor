@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf-extractor"
+version = "0.1.0"
+description = "Rule-driven structured content extraction for text-based PDF files."
+requires-python = ">=3.11"
+dependencies = [
+    "pymupdf>=1.27,<2",
+    "pdfplumber>=0.11,<1",
+]
+
+[project.optional-dependencies]
+llm = [
+    "openai>=2,<3",
+]
+dev = [
+    "pytest>=9,<10",
+    "pytest-cov>=7,<8",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
