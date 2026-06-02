@@ -404,6 +404,32 @@ class FTSIndexer:
 - 关键词多个时，优先返回同时包含多个关键词的段落。
 - 如果没有完全匹配，再返回部分匹配结果。
 
+### 中文关键词检索策略
+
+SQLite FTS5 默认 tokenizer 对中文分词支持有限。第一版不引入中文分词库，也不实现自定义 tokenizer，使用 FTS5 内置的 `trigram` tokenizer 做关键词子串定位。
+
+建议创建索引：
+
+```sql
+CREATE VIRTUAL TABLE paragraphs_fts USING fts5(
+    paragraph_id UNINDEXED,
+    section_id UNINDEXED,
+    page_number UNINDEXED,
+    text,
+    tokenize = 'trigram'
+);
+```
+
+检索规则：
+
+1. 长度大于等于 3 个 Unicode 字符的关键词，使用 FTS5 `MATCH` 查询。
+2. 长度小于 3 个 Unicode 字符的关键词，使用 `LIKE '%关键词%'` 或 Python 子串匹配作为 fallback。原因是 `trigram` 无法匹配少于 3 个 Unicode 字符的子串。
+3. 多个关键词查询时，先取同时包含全部关键词的段落；没有完全匹配时，再按命中关键词数量降序返回部分匹配结果。
+4. 对 FTS5 返回的候选段落，使用 Python 的 `keyword in paragraph.text` 做一次二次校验，避免查询语法、标点或 tokenizer 行为导致误判。
+5. 用户输入必须通过参数绑定传给 SQLite。不要直接将用户关键词拼接进 SQL。构造 `MATCH` 表达式时，也要转义或包装用户关键词，避免引号、连字符和布尔关键字改变查询语义。
+
+第一版不引入 `jieba` 等中文分词依赖。当前目标是基于用户提供的明确关键词定位段落，不需要搜索引擎级别的语义召回。后续如果需要支持近义词、术语归一化或自然语言搜索，再评估中文分词或自定义 tokenizer。
+
 ------
 
 ## 6.5 Rule Schema
@@ -745,6 +771,7 @@ pdf_extractor/extractor/llm_extractor.py
 - 根据关键词定位段落
 - 根据规则提取文本
 - 根据规则提取简单数值
+- 根据规则提取表格
 - 返回结果及坐标信息
 - 提供 CLI 示例
 
@@ -866,7 +893,7 @@ print(results)
 - 可以使用 LLM 的多模态能力 或 pdfplumber 辅助表格提取。
 - 不要引入重量级框架。
 - 不要实现 OCR。
-- LLM 相关能力必须封装到utils/llm_connect中，直接用OpenAI SDK就好。
+- LLM 相关能力必须封装到utils/llm_connection中，直接用OpenAI SDK就好。
 - 所有提取结果都必须保留来源坐标。
 - 代码应保持模块清晰，便于后续扩展。
 
@@ -878,7 +905,6 @@ print(results)
 
 - OCR
 - 图片识别
-- 多模态 PDF 理解
 - 自主 Agent 规划
 - 复杂任务编排
 - 向量数据库
