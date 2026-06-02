@@ -1,0 +1,22 @@
+{
+  "rules": [
+    {
+      "id": "net_income_value",
+      "name": "Extract net income amount",
+      "scope": "Section 2 Results",
+      "keywords": ["Net income"],
+      "extract_type": "value",
+      "target": "Net income amount",
+      "priority": 2
+    },
+    {
+      "id": "net_income_table",
+      "name": "Extract income table",
+      "scope": "Section 2 Results",
+      "keywords": ["Net income"],
+      "extract_type": "table",
+      "target": "Income table",
+      "priority": 1
+    }
+  ]
+}

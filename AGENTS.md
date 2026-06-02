@@ -166,6 +166,8 @@ class Section:
     start_page: int
     end_page: int | None
     paragraphs: list[str]
+    parent_id: str | None
+    path: list[str]
 ```
 
 说明：
@@ -174,6 +176,8 @@ class Section:
 - `title` 是章节标题。
 - `level` 表示章节层级，例如 1 表示章，2 表示节。
 - `paragraphs` 存储该章节下的 paragraph id。
+- `parent_id` 存储父章节 id，顶层章节为 `None`。
+- `path` 存储从顶层章节到当前章节的完整标题路径。
 
 ### 5.4 Paragraph
 
@@ -185,6 +189,7 @@ class Paragraph:
     page_number: int
     bbox: BBox
     section_id: str | None
+    words: list[Word]
 ```
 
 ### 5.5 BBox
@@ -198,7 +203,22 @@ class BBox:
     y1: float
 ```
 
-### 5.6 ExtractionRule
+### 5.6 Word
+
+```python
+@dataclass
+class Word:
+    text: str
+    bbox: BBox
+```
+
+说明：
+
+- `words` 用于保留段落内的 word 级坐标。
+- 数值提取时优先根据命中的 word 合并出 span bbox。
+- 如果无法获取精确 word 坐标，则回退到段落 bbox。
+
+### 5.7 ExtractionRule
 
 ```python
 @dataclass
@@ -215,11 +235,14 @@ class ExtractionRule:
 字段说明：
 
 - `scope`: 提取范围，例如 `"第一章 第三节"`，也可以为空。
+- `scope` 推荐使用完整路径，例如 `"第二章 > 第三节 财务表现"`。
+- 标题唯一时可以使用简写，例如 `"第三节 财务表现"`。
+- 标题重复且 scope 不完整时，不要猜测章节，应返回 `scope_ambiguous` diagnostics。
 - `keywords`: 用于定位文本区域的关键词。
 - `extract_type`: 可选值包括 `"text"`, `"value"`, `"table"`。
 - `target`: 用户想提取的内容，例如 `"净收入金额"`、`"利润表格"`。
 
-### 5.7 ExtractionResult
+### 5.8 ExtractionResult
 
 ```python
 @dataclass
@@ -231,6 +254,30 @@ class ExtractionResult:
     bbox: BBox
     confidence: float | None = None
 ```
+
+### 5.9 RuleDiagnostic
+
+```python
+@dataclass
+class RuleDiagnostic:
+    rule_id: str
+    status: str
+    message: str
+    scope: str | None = None
+    section_id: str | None = None
+    candidate_count: int = 0
+    result_count: int = 0
+```
+
+诊断状态包括：
+
+- `success`
+- `scope_not_found`
+- `scope_ambiguous`
+- `keywords_not_found`
+- `value_not_found`
+- `table_not_found`
+- `text_not_found`
 
 ------
 
@@ -350,6 +397,7 @@ pdf_extractor/parser/paragraph_builder.py
   - 页码
   - bbox
   - 所属 section_id
+  - word 级文本和 bbox 坐标
 
 第一版可以简单地将 PDF text block 视为 paragraph。
 
@@ -599,6 +647,18 @@ pdf_extractor/extractor/value_extractor.py
 - 百分比
 - 数字
 - 带单位的数值
+- 币种前后缀和货币符号，例如 `RMB 3,200 million`、`3,200 USD`、`$3,200`
+- 括号负数，例如 `(1,234 万元)`
+- 百分点和基点，例如 `8.6 个百分点`、`25 bps`
+- 数量单位，例如 `120 人`、`120 万股`
+- 科学计数法，例如 `2.5e6`
+
+候选值选择规则：
+
+1. 过滤日期和孤立年份，避免将报告期间误识别为目标数值。
+2. 根据 `target` 优先选择金额、百分比、数量或普通数字。
+3. 同类型候选优先选择关键词之后且距离关键词更近的值。
+4. 输出保留 PDF 中的原始字符串，不移除币种、单位或括号。
 
 例如：
 
@@ -628,15 +688,23 @@ pdf_extractor/extractor/table_extractor.py
 职责：
 
 - 从定位区域附近提取表格。
-- 第一版可使用 pdfplumber。
+- 使用 pdfplumber 作为本地确定性提取工具。
 - 如果关键词命中某段文本，应尝试提取该页附近的表格。
+- 支持有边框表格和无边框文本布局表格。
+- 支持将命中页和相邻续页上的候选表格拼接为跨页表格。
+- 修复常见合并表头空白、首列纵向合并空白和纯空分隔行。
+- 本地方法没有结果时，可以使用多模态 LLM 作为可选 fallback。
 
 推荐策略：
 
 1. 根据关键词定位到 page_number。
-2. 在该页提取所有表格。
-3. 判断表格中是否包含关键词。
-4. 返回匹配表格。
+2. 在命中页和相邻续页提取有边框表格。
+3. 使用文本布局策略补充提取无边框表格。
+4. 根据表头、列数、bbox 横向重叠和页边缘位置判断是否为跨页续表。
+5. 修复常见合并单元格空白。
+6. 判断表格中是否包含关键词。
+7. 本地方法没有结果时，按需调用多模态 LLM fallback。
+8. 返回匹配表格。
 
 需要实现的接口：
 
@@ -654,8 +722,11 @@ class TableExtractor:
 注意：
 
 - 表格结果也需要带 page_number。
+- 跨页表格额外返回 page_numbers 和每页对应的 bboxes。
 - 如果可以获取表格 bbox，则返回表格 bbox。
 - 如果无法获取精确 bbox，则返回关键词段落 bbox，并在结果中标记 bbox 来源。
+- 多模态 LLM 只负责重建结构化 rows，不负责生成坐标。
+- 多模态 LLM 输入应限制在关键词命中页和相邻续页，避免发送整个 PDF。
 
 ------
 
@@ -678,12 +749,14 @@ pdf_extractor/extractor/llm_extractor.py
 - 从自然语言段落中理解目标字段。
 - 多个数值同时出现时判断哪个是目标值。
 - 表格结构不规则时辅助识别字段。
+- 本地表格提取无法识别无边框或复杂布局时，辅助重建 rows。
 
 需要注意：
 
 - LLM 输入应尽量小，只传命中的段落或候选表格。
 - LLM 输出必须解析成结构化 JSON。
 - LLM 不负责生成坐标，坐标必须来自 PDF 解析阶段。
+- 表格多模态 fallback 使用页面图片和严格 JSON Schema，只接受 rows 数组。
 
 ------
 
@@ -711,6 +784,7 @@ pdf_extractor/extractor/llm_extractor.py
 {
   "source_text": "净收入为 12.5 亿元，同比增长 8.6%",
   "section_title": "第一章 第三节 财务表现",
+  "section_path": ["第一章", "第三节 财务表现"],
   "paragraph_id": "p_000123"
 }
 ```
@@ -751,9 +825,24 @@ pdf_extractor/extractor/llm_extractor.py
       },
       "confidence": 0.86
     }
+  ],
+  "diagnostics": [
+    {
+      "rule_id": "net_income_001",
+      "status": "success",
+      "message": "Extraction completed successfully.",
+      "candidate_count": 1,
+      "result_count": 1
+    }
   ]
 }
 ```
+
+CLI 退出码：
+
+- `0`: 执行成功，至少提取到一项结果。
+- `1`: 参数、文件、规则格式或 PDF 解析失败。
+- `2`: 执行完成，但所有规则均未提取到结果。此时仍然需要输出 diagnostics JSON。
 
 ------
 
@@ -780,7 +869,6 @@ pdf_extractor/extractor/llm_extractor.py
 - OCR
 - 图片内容识别
 - 多模态 LLM
-- 复杂跨页表格识别
 - 高精度表格 bbox
 - Web UI
 - 向量检索

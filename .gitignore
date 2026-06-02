@@ -51,6 +51,8 @@ coverage.xml
 .pytest_cache/
 cover/
 reports/
+examples/sample.pdf
+examples/output.json
 
 # Translations
 *.mo
