@@ -1,1 +1,4 @@
-"""Paragraph-level full-text indexing."""
+"""段落级全文索引。
+
+Paragraph-level full-text indexing.
+"""

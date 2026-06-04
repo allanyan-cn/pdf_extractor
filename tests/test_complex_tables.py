@@ -15,7 +15,11 @@ from pdf_extractor.models import BBox, Document, Page, Paragraph
 from pdf_extractor.rules.rule_schema import ExtractionRule
 
 
-def _rule() -> ExtractionRule:
+def _rule(
+    *,
+    table_strategy: str = "auto",
+    llm_input: str = "page_image",
+) -> ExtractionRule:
     return ExtractionRule(
         "table_rule",
         "Extract income table",
@@ -23,6 +27,8 @@ def _rule() -> ExtractionRule:
         ["Net income"],
         "table",
         "Income table",
+        table_strategy=table_strategy,
+        llm_input=llm_input,
     )
 
 
@@ -215,6 +221,43 @@ def test_table_extractor_uses_optional_llm_fallback(
     assert result.bbox == document.paragraphs[0].bbox
 
 
+def test_table_extractor_local_strategy_skips_llm_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assistant = SimpleNamespace(extract_table=lambda *_args: pytest.fail("unexpected LLM call"))
+    monkeypatch.setattr(
+        "pdf_extractor.extractor.table_extractor.pdfplumber.open",
+        lambda _path: nullcontext(SimpleNamespace(pages=[_page()])),
+    )
+    document = _document(page_count=1)
+
+    results = TableExtractor(llm_assistant=assistant).extract(
+        _rule(table_strategy="local"), document, document.paragraphs
+    )
+
+    assert results == []
+
+
+def test_table_extractor_llm_strategy_skips_local_tables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assistant = SimpleNamespace(
+        extract_table=lambda *_args: [["Item", "Amount"], ["Net income", "llm"]]
+    )
+    monkeypatch.setattr(
+        "pdf_extractor.extractor.table_extractor.pdfplumber.open",
+        lambda _path: pytest.fail("unexpected local table extraction"),
+    )
+    document = _document(page_count=1)
+
+    result = TableExtractor(llm_assistant=assistant).extract(
+        _rule(table_strategy="llm"), document, document.paragraphs
+    )[0]
+
+    assert result.value == [["Item", "Amount"], ["Net income", "llm"]]
+    assert result.bbox_source == "table_llm"
+
+
 def test_multimodal_table_llm_extractor_sends_page_image_and_parses_rows(
     tmp_path: Path,
 ) -> None:
@@ -248,6 +291,31 @@ def test_multimodal_table_llm_extractor_sends_page_image_and_parses_rows(
     assert content[1]["type"] == "input_image"
     assert content[1]["image_url"].startswith("data:image/png;base64,")
     assert calls[0]["text"]["format"]["type"] == "json_schema"
+
+
+def test_multimodal_table_llm_extractor_can_send_candidate_text() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def create(**kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return SimpleNamespace(
+            output_text=json.dumps({"rows": [["Item", "Amount"], ["Net income", "10"]]})
+        )
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create))
+    assistant = MultimodalTableLLMExtractor(client, model="test-model")
+
+    rows = assistant.extract_table(
+        _rule(table_strategy="llm", llm_input="text"),
+        _document(page_count=1),
+        [1],
+        BBox(10, 10, 100, 30),
+    )
+
+    content = calls[0]["input"][0]["content"]
+    assert rows == [["Item", "Amount"], ["Net income", "10"]]
+    assert [item["type"] for item in content] == ["input_text", "input_text"]
+    assert "[page 1] Net income table" in content[1]["text"]
 
 
 def test_multimodal_table_llm_extractor_rejects_invalid_rows(tmp_path: Path) -> None:

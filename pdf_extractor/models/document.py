@@ -1,4 +1,7 @@
-"""Parsed PDF document data models."""
+"""解析后的 PDF 文档数据模型。
+
+Parsed PDF document data models.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +12,10 @@ from pdf_extractor.utils.bbox import BBox
 
 @dataclass(frozen=True)
 class Word:
-    """A word token with its PDF coordinates."""
+    """带 PDF 坐标的单词 token。
+
+    A word token with its PDF coordinates.
+    """
 
     text: str
     bbox: BBox
@@ -17,7 +23,10 @@ class Word:
 
 @dataclass
 class Paragraph:
-    """A text block extracted from a PDF page."""
+    """从 PDF 页面提取出的文本块。
+
+    A text block extracted from a PDF page.
+    """
 
     id: str
     text: str
@@ -29,7 +38,10 @@ class Paragraph:
 
 @dataclass
 class Page:
-    """A one-based PDF page with paragraph blocks."""
+    """使用 1-based 页码表示的 PDF 页面及其段落。
+
+    A one-based PDF page with paragraph blocks.
+    """
 
     page_number: int
     width: float
@@ -39,7 +51,10 @@ class Page:
 
 @dataclass
 class Section:
-    """A document section derived from the TOC or heading heuristics."""
+    """由 TOC 或标题启发式规则识别出的文档章节。
+
+    A document section derived from the TOC or heading heuristics.
+    """
 
     id: str
     title: str
@@ -53,7 +68,10 @@ class Section:
 
 @dataclass
 class Document:
-    """The parsed representation of a text-based PDF file."""
+    """文本型 PDF 的解析结果。
+
+    The parsed representation of a text-based PDF file.
+    """
 
     file_path: str
     pages: list[Page] = field(default_factory=list)
@@ -61,7 +79,10 @@ class Document:
 
     @property
     def paragraphs(self) -> list[Paragraph]:
-        """Return document paragraphs in reading order."""
+        """按阅读顺序返回全文段落。
+
+        Return document paragraphs in reading order.
+        """
         return [
             paragraph
             for page in self.pages

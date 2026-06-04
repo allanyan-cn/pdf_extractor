@@ -22,7 +22,12 @@ from pdf_extractor.utils.llm_connection import create_openai_client
 from pdf_extractor.utils.logging import configure_logging
 
 
-def _rule(extract_type: str = "value", *, scope: str | None = None) -> ExtractionRule:
+def _rule(
+    extract_type: str = "value",
+    *,
+    scope: str | None = None,
+    within_heading: str | None = None,
+) -> ExtractionRule:
     return ExtractionRule(
         id=f"{extract_type}_rule",
         name=f"提取 {extract_type}",
@@ -30,6 +35,7 @@ def _rule(extract_type: str = "value", *, scope: str | None = None) -> Extractio
         keywords=["净收入"],
         extract_type=extract_type,
         target="净收入金额",
+        within_heading=within_heading,
     )
 
 
@@ -186,6 +192,114 @@ def test_value_extractor_prefers_percentage_for_rate_target() -> None:
     assert result.value == "8.6%"
 
 
+def test_value_extractor_percentage_type_returns_only_percentage() -> None:
+    paragraph = Paragraph(
+        "p_1",
+        "净收入为 12.5 亿元，同比增长 8.6%。",
+        1,
+        BBox(0, 0, 100, 20),
+    )
+    rule = ExtractionRule(
+        "growth_rate",
+        "growth rate",
+        None,
+        ["同比增长"],
+        "percentage",
+        "同比增长",
+    )
+
+    result = ValueExtractor().extract(rule, [paragraph])[0]
+
+    assert result.value == "8.6%"
+
+
+def test_value_extractor_number_type_excludes_percentages_and_amounts() -> None:
+    paragraph = Paragraph(
+        "p_1",
+        "净收入为 12.5 亿元，同比增长 8.6%，客户数量为 120。",
+        1,
+        BBox(0, 0, 100, 20),
+    )
+    rule = ExtractionRule(
+        "customer_count",
+        "customer count",
+        None,
+        ["客户数量"],
+        "number",
+        "客户数量",
+    )
+
+    result = ValueExtractor().extract(rule, [paragraph])[0]
+
+    assert result.value == "120"
+
+
+def test_value_extractor_number_type_returns_empty_for_percentage_only() -> None:
+    paragraph = Paragraph("p_1", "同比增长 8.6%。", 1, BBox(0, 0, 100, 20))
+    rule = ExtractionRule("growth", "growth", None, ["同比增长"], "number", "同比增长")
+
+    assert ValueExtractor().extract(rule, [paragraph]) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "keyword", "expected"),
+    [
+        ("报告日期为 2025-12-31。", "报告日期", "2025-12-31"),
+        ("董事会批准日期为 31 Dec 2025。", "批准日期", "31 Dec 2025"),
+        ("会议日期为 2025年12月31日。", "会议日期", "2025年12月31日"),
+    ],
+)
+def test_value_extractor_date_type_returns_only_dates(
+    text: str,
+    keyword: str,
+    expected: str,
+) -> None:
+    paragraph = Paragraph("p_1", text, 1, BBox(0, 0, 100, 20))
+    rule = ExtractionRule("date_rule", "date rule", None, [keyword], "date", keyword)
+
+    result = ValueExtractor().extract(rule, [paragraph])[0]
+
+    assert result.value == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "keyword", "expected"),
+    [
+        ("会议时间为 14:30。", "会议时间", "14:30"),
+        ("Call starts at 9:05 AM.", "starts", "9:05 AM"),
+        ("发布时间为 下午3时30分。", "发布时间", "下午3时30分"),
+    ],
+)
+def test_value_extractor_time_type_returns_only_times(
+    text: str,
+    keyword: str,
+    expected: str,
+) -> None:
+    paragraph = Paragraph("p_1", text, 1, BBox(0, 0, 100, 20))
+    rule = ExtractionRule("time_rule", "time rule", None, [keyword], "time", keyword)
+
+    result = ValueExtractor().extract(rule, [paragraph])[0]
+
+    assert result.value == expected
+
+
+def test_value_extractor_value_and_number_types_ignore_dates_and_times() -> None:
+    paragraph = Paragraph(
+        "p_1",
+        "报告日期为 2025-12-31，会议时间为 14:30，客户数量为 120。",
+        1,
+        BBox(0, 0, 100, 20),
+    )
+    value_rule = ExtractionRule("value_rule", "value", None, ["客户数量"], "value", "客户数量")
+    number_rule = ExtractionRule("number_rule", "number", None, ["客户数量"], "number", "客户数量")
+
+    value_result = ValueExtractor().extract(value_rule, [paragraph])[0]
+    number_result = ValueExtractor().extract(number_rule, [paragraph])[0]
+
+    assert value_result.value == "120"
+    assert number_result.value == "120"
+
+
 def test_value_extractor_returns_span_bbox_from_word_coordinates() -> None:
     paragraph = Paragraph(
         "p_1",
@@ -258,6 +372,99 @@ def test_value_extractor_ignores_dates_and_standalone_years() -> None:
     assert result.value == "12.5 亿元"
 
 
+def test_value_extractor_skips_year_currency_header_and_note_number() -> None:
+    paragraph = Paragraph(
+        "p_1",
+        "2024 $million Net interest income 3 5,955 6,366",
+        1,
+        BBox(0, 0, 100, 20),
+    )
+    rule = ExtractionRule(
+        "net_interest",
+        "net interest",
+        None,
+        ["Net interest income"],
+        "value",
+        "Net interest income",
+    )
+
+    result = ValueExtractor().extract(rule, [paragraph])[0]
+
+    assert result.value == "5,955"
+    assert result.normalized_value is None
+
+
+@pytest.mark.parametrize(
+    ("text", "extract_type", "target", "keywords", "expected_value", "expected_normalized"),
+    [
+        ("净利润为 $3,200。", "value", "净利润金额", ["净利润"], "$3,200", None),
+        ("同比增长 8.6%。", "percentage", "同比增长率", ["同比增长"], "8.6%", "8.6"),
+        ("客户数量为 120。", "number", "客户数量", ["客户数量"], "120", "120"),
+        ("测量值为 2.5e6。", "number", "测量值", ["测量值"], "2.5e6", "2500000"),
+        (
+            "报告日期为 2025年12月31日。",
+            "date",
+            "报告日期",
+            ["报告日期"],
+            "2025年12月31日",
+            "2025年12月31日",
+        ),
+        (
+            "会议时间为 下午3时30分。",
+            "time",
+            "会议时间",
+            ["会议时间"],
+            "下午3时30分",
+            "下午3时30分",
+        ),
+    ],
+)
+def test_value_extractor_normalizes_only_explicit_extract_types(
+    text: str,
+    extract_type: str,
+    target: str,
+    keywords: list[str],
+    expected_value: str,
+    expected_normalized: str | None,
+) -> None:
+    paragraph = Paragraph("p_1", text, 1, BBox(0, 0, 10, 10))
+    rule = ExtractionRule("rule", "rule", None, keywords, extract_type, target)
+
+    result = ValueExtractor().extract(rule, [paragraph])[0]
+
+    assert result.value == expected_value
+    assert result.normalized_value == expected_normalized
+
+
+@pytest.mark.parametrize(
+    ("parentheses_mode", "expected_normalized"),
+    [
+        ("negative", "-1234"),
+        ("positive", "1234"),
+        ("preserve", "(1,234)"),
+    ],
+)
+def test_value_extractor_honors_parentheses_normalization_mode(
+    parentheses_mode: str,
+    expected_normalized: str,
+) -> None:
+    paragraph = Paragraph("p_1", "净收入为 (1,234)。", 1, BBox(0, 0, 10, 10))
+    rule = ExtractionRule(
+        "rule",
+        "rule",
+        None,
+        ["净收入"],
+        "number",
+        "净收入",
+        normalization={"parentheses": parentheses_mode},
+    )
+
+    result = ValueExtractor().extract(rule, [paragraph])[0]
+
+    assert result.value == "(1,234)"
+    assert result.normalized_value == expected_normalized
+
+
 def test_value_extractor_returns_no_result_for_date_only_paragraph() -> None:
     paragraph = Paragraph("p_1", "报告日期为 2024-03-31。", 1, BBox(0, 0, 10, 10))
     rule = ExtractionRule("date", "date", None, ["报告日期"], "value", "报告日期")
@@ -321,6 +528,297 @@ def test_table_extractor_reads_real_single_page_table(tmp_path: Path) -> None:
 
     assert result.value[1] == ["Net income", "12.5 billion"]
     assert result.bbox_source == "table"
+
+
+def test_rule_executor_extracts_typed_cell_by_table_title_row_and_column(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    table = SimpleNamespace(
+        bbox=(50, 100, 350, 190),
+        extract=lambda: [["Item", "2025", "YoY"], ["Net income", "5,955", "8.6%"]],
+    )
+    page = SimpleNamespace(height=400, find_tables=lambda **_kwargs: [table])
+    monkeypatch.setattr(
+        "pdf_extractor.extractor.table_extractor.pdfplumber.open",
+        lambda _path: nullcontext(SimpleNamespace(pages=[page])),
+    )
+    paragraph = Paragraph("p_1", "Consolidated income statement", 1, BBox(50, 50, 350, 80))
+    document = Document("sample.pdf", [Page(1, 400, 400, [paragraph])])
+    rule = ExtractionRule(
+        "net_income_growth",
+        "Extract net income growth",
+        None,
+        ["Consolidated income statement"],
+        "percentage",
+        "Net income growth",
+        table_selector={
+            "table_title": "Consolidated income statement",
+            "row_header": "Net income",
+            "column_header": "YoY",
+        },
+    )
+    with FTSIndexer() as indexer:
+        indexer.build(document)
+
+        report = RuleExecutor(indexer).execute_with_diagnostics(document, [rule])
+
+    assert report.diagnostics[0].status == "success"
+    assert report.results[0].value == "8.6%"
+    assert report.results[0].bbox_source == "table_cell"
+    assert report.results[0].bbox == BBox(250, 145, 350, 190)
+
+
+def test_rule_executor_extracts_table_cell_when_keywords_are_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    table = SimpleNamespace(
+        bbox=(50, 100, 350, 190),
+        extract=lambda: [["Item", "2025"], ["Net income", "5,955"]],
+    )
+    page = SimpleNamespace(height=400, find_tables=lambda **_kwargs: [table])
+    monkeypatch.setattr(
+        "pdf_extractor.extractor.table_extractor.pdfplumber.open",
+        lambda _path: nullcontext(SimpleNamespace(pages=[page])),
+    )
+    paragraph = Paragraph("p_1", "Consolidated income statement", 1, BBox(50, 50, 350, 80))
+    document = Document("sample.pdf", [Page(1, 400, 400, [paragraph])])
+    rule = ExtractionRule(
+        "net_income",
+        "Extract net income",
+        None,
+        [],
+        "number",
+        "Net income",
+        within_heading="Consolidated income statement",
+        table_selector={"row_header": "Net income", "column_header": "2025"},
+    )
+    with FTSIndexer() as indexer:
+        indexer.build(document)
+
+        report = RuleExecutor(indexer).execute_with_diagnostics(document, [rule])
+
+    assert report.diagnostics[0].status == "success"
+    assert report.results[0].value == "5,955"
+    assert report.results[0].normalized_value == "5955"
+
+
+def test_rule_executor_resolves_table_cell_headers_from_page_words(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    table = SimpleNamespace(
+        bbox=(200, 100, 400, 160),
+        extract=lambda: [["", ""], ["5,955", "6,366"]],
+    )
+    words = [
+        {"text": "2025", "x0": 230, "x1": 250, "top": 80, "bottom": 88},
+        {"text": "2024", "x0": 330, "x1": 350, "top": 80, "bottom": 88},
+        {"text": "Net", "x0": 50, "x1": 70, "top": 130, "bottom": 138},
+        {"text": "interest", "x0": 72, "x1": 110, "top": 130, "bottom": 138},
+        {"text": "income", "x0": 112, "x1": 150, "top": 130, "bottom": 138},
+        {"text": "5,955", "x0": 230, "x1": 260, "top": 130, "bottom": 138},
+        {"text": "6,366", "x0": 330, "x1": 360, "top": 130, "bottom": 138},
+    ]
+    page = SimpleNamespace(
+        height=400,
+        find_tables=lambda **_kwargs: [table],
+        extract_words=lambda **_kwargs: words,
+    )
+    monkeypatch.setattr(
+        "pdf_extractor.extractor.table_extractor.pdfplumber.open",
+        lambda _path: nullcontext(SimpleNamespace(pages=[page])),
+    )
+    monkeypatch.setattr(
+        "pdf_extractor.extractor.table_cell_extractor.pdfplumber.open",
+        lambda _path: nullcontext(SimpleNamespace(pages=[page])),
+    )
+    paragraph = Paragraph("p_1", "Income statement", 1, BBox(50, 50, 350, 80))
+    document = Document("sample.pdf", [Page(1, 400, 400, [paragraph])])
+    rule = ExtractionRule(
+        "net_interest_income",
+        "Extract net interest income",
+        None,
+        [],
+        "number",
+        "Net interest income",
+        table_selector={"row_header": "Net interest income", "column_header": "2025"},
+    )
+    with FTSIndexer() as indexer:
+        indexer.build(document)
+
+        report = RuleExecutor(indexer).execute_with_diagnostics(document, [rule])
+
+    assert report.diagnostics[0].status == "success"
+    assert report.results[0].value == "5,955"
+
+
+def test_rule_executor_extracts_typed_cell_by_table_row_and_column_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_table = SimpleNamespace(
+        bbox=(50, 100, 250, 160),
+        extract=lambda: [["A", "B"], ["ignore", "0"]],
+    )
+    second_table = SimpleNamespace(
+        bbox=(50, 200, 250, 260),
+        extract=lambda: [["Meeting", "14:30"], ["Other", "15:45"]],
+    )
+    page = SimpleNamespace(
+        height=400,
+        find_tables=lambda **_kwargs: [first_table, second_table],
+    )
+    monkeypatch.setattr(
+        "pdf_extractor.extractor.table_extractor.pdfplumber.open",
+        lambda _path: nullcontext(SimpleNamespace(pages=[page])),
+    )
+    paragraph = Paragraph("p_1", "Schedule table", 1, BBox(50, 50, 350, 80))
+    document = Document("sample.pdf", [Page(1, 400, 400, [paragraph])])
+    rule = ExtractionRule(
+        "meeting_time",
+        "Extract meeting time",
+        None,
+        ["Schedule table"],
+        "time",
+        "Meeting time",
+        table_selector={"table_index": 2, "row_index": 1, "column_index": 2},
+    )
+    with FTSIndexer() as indexer:
+        indexer.build(document)
+
+        report = RuleExecutor(indexer).execute_with_diagnostics(document, [rule])
+
+    assert report.diagnostics[0].status == "success"
+    assert report.results[0].value == "14:30"
+    assert report.results[0].bbox_source == "table_cell"
+
+
+def test_rule_executor_extracts_table_when_keywords_are_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    table = SimpleNamespace(
+        bbox=(50, 100, 250, 160),
+        extract=lambda: [["Item", "Amount"], ["Net income", "5,955"]],
+    )
+    page = SimpleNamespace(height=400, find_tables=lambda **_kwargs: [table])
+    monkeypatch.setattr(
+        "pdf_extractor.extractor.table_extractor.pdfplumber.open",
+        lambda _path: nullcontext(SimpleNamespace(pages=[page])),
+    )
+    paragraph = Paragraph("p_1", "Income statement", 1, BBox(50, 50, 350, 80))
+    document = Document("sample.pdf", [Page(1, 400, 400, [paragraph])])
+    rule = ExtractionRule(
+        "income_table",
+        "Income table",
+        None,
+        [],
+        "table",
+        "Income table",
+        within_heading="Income statement",
+    )
+    with FTSIndexer() as indexer:
+        indexer.build(document)
+
+        report = RuleExecutor(indexer).execute_with_diagnostics(document, [rule])
+
+    assert report.diagnostics[0].status == "success"
+    assert report.results[0].value == [["Item", "Amount"], ["Net income", "5,955"]]
+
+
+def test_rule_executor_reports_table_row_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    table = SimpleNamespace(
+        bbox=(50, 100, 250, 160),
+        extract=lambda: [["Item", "Amount"], ["Net income", "5,955"]],
+    )
+    page = SimpleNamespace(height=400, find_tables=lambda **_kwargs: [table])
+    monkeypatch.setattr(
+        "pdf_extractor.extractor.table_extractor.pdfplumber.open",
+        lambda _path: nullcontext(SimpleNamespace(pages=[page])),
+    )
+    paragraph = Paragraph("p_1", "Income table", 1, BBox(50, 50, 350, 80))
+    document = Document("sample.pdf", [Page(1, 400, 400, [paragraph])])
+    rule = ExtractionRule(
+        "missing_cell",
+        "Missing cell",
+        None,
+        ["Income table"],
+        "number",
+        "Missing amount",
+        table_selector={"row_header": "Operating profit", "column_header": "Amount"},
+    )
+    with FTSIndexer() as indexer:
+        indexer.build(document)
+
+        report = RuleExecutor(indexer).execute_with_diagnostics(document, [rule])
+
+    assert report.results == []
+    assert report.diagnostics[0].status == "table_row_not_found"
+    assert "row" in report.diagnostics[0].message
+
+
+def test_rule_executor_reports_table_column_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    table = SimpleNamespace(
+        bbox=(50, 100, 250, 160),
+        extract=lambda: [["Item", "Amount"], ["Net income", "5,955"]],
+    )
+    page = SimpleNamespace(height=400, find_tables=lambda **_kwargs: [table])
+    monkeypatch.setattr(
+        "pdf_extractor.extractor.table_extractor.pdfplumber.open",
+        lambda _path: nullcontext(SimpleNamespace(pages=[page])),
+    )
+    paragraph = Paragraph("p_1", "Income table", 1, BBox(50, 50, 350, 80))
+    document = Document("sample.pdf", [Page(1, 400, 400, [paragraph])])
+    rule = ExtractionRule(
+        "missing_column",
+        "Missing column",
+        None,
+        ["Income table"],
+        "number",
+        "Missing amount",
+        table_selector={"row_header": "Net income", "column_header": "YoY"},
+    )
+    with FTSIndexer() as indexer:
+        indexer.build(document)
+
+        report = RuleExecutor(indexer).execute_with_diagnostics(document, [rule])
+
+    assert report.results == []
+    assert report.diagnostics[0].status == "table_column_not_found"
+    assert "column" in report.diagnostics[0].message
+
+
+def test_rule_executor_reports_table_cell_type_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    table = SimpleNamespace(
+        bbox=(50, 100, 250, 160),
+        extract=lambda: [["Item", "Amount"], ["Net income", "N/A"]],
+    )
+    page = SimpleNamespace(height=400, find_tables=lambda **_kwargs: [table])
+    monkeypatch.setattr(
+        "pdf_extractor.extractor.table_extractor.pdfplumber.open",
+        lambda _path: nullcontext(SimpleNamespace(pages=[page])),
+    )
+    paragraph = Paragraph("p_1", "Income table", 1, BBox(50, 50, 350, 80))
+    document = Document("sample.pdf", [Page(1, 400, 400, [paragraph])])
+    rule = ExtractionRule(
+        "wrong_type",
+        "Wrong type",
+        None,
+        ["Income table"],
+        "number",
+        "Amount",
+        table_selector={"row_header": "Net income", "column_header": "Amount"},
+    )
+    with FTSIndexer() as indexer:
+        indexer.build(document)
+
+        report = RuleExecutor(indexer).execute_with_diagnostics(document, [rule])
+
+    assert report.results == []
+    assert report.diagnostics[0].status == "table_cell_type_not_found"
 
 
 def test_rule_executor_resolves_scope_and_dispatches_value_extractor() -> None:
@@ -418,6 +916,69 @@ def test_rule_executor_resolves_full_section_path() -> None:
     assert [result.value for result in results] == ["20 亿元"]
 
 
+def test_rule_executor_filters_candidates_after_within_heading() -> None:
+    paragraphs = [
+        Paragraph("p_1", "净收入为 10 亿元。", 1, BBox(0, 0, 10, 10), "s_1"),
+        Paragraph("p_2", "合并利润表", 3, BBox(0, 0, 10, 10), "s_1"),
+        Paragraph("p_3", "净收入为 20 亿元。", 3, BBox(0, 20, 10, 30), "s_1"),
+    ]
+    sections = [Section("s_1", "财务报表", 1, 1, 3, [p.id for p in paragraphs])]
+    document = Document(
+        "sample.pdf",
+        [Page(1, 100, 100, paragraphs[:1]), Page(3, 100, 100, paragraphs[1:])],
+        sections,
+    )
+    with FTSIndexer() as indexer:
+        indexer.build(document)
+
+        results = RuleExecutor(indexer).execute(
+            document,
+            [_rule(scope="财务报表", within_heading="合并利润表")],
+        )
+
+    assert [result.value for result in results] == ["20 亿元"]
+
+
+def test_rule_executor_uses_heading_fallback_when_scope_boundary_is_too_short() -> None:
+    paragraphs = [
+        Paragraph("p_1", "净收入为 10 亿元。", 1, BBox(0, 0, 10, 10), "s_1"),
+        Paragraph("p_2", "财务报表 合并利润表", 4, BBox(0, 0, 10, 10), "s_2"),
+        Paragraph("p_3", "净收入为 20 亿元。", 4, BBox(0, 20, 10, 30), "s_2"),
+    ]
+    sections = [
+        Section("s_1", "财务报表", 1, 1, 1, ["p_1"], path=["财务报表"]),
+        Section("s_2", "审计报告", 1, 2, 5, ["p_2", "p_3"], path=["审计报告"]),
+    ]
+    document = Document(
+        "sample.pdf",
+        [Page(1, 100, 100, paragraphs[:1]), Page(4, 100, 100, paragraphs[1:])],
+        sections,
+    )
+    with FTSIndexer() as indexer:
+        indexer.build(document)
+
+        report = RuleExecutor(indexer).execute_with_diagnostics(
+            document,
+            [_rule(scope="财务报表", within_heading="合并利润表")],
+        )
+
+    assert report.diagnostics[0].status == "success"
+    assert [result.value for result in report.results] == ["20 亿元"]
+
+
+def test_rule_executor_reports_missing_within_heading() -> None:
+    document = _document()
+    with FTSIndexer() as indexer:
+        indexer.build(document)
+
+        report = RuleExecutor(indexer).execute_with_diagnostics(
+            document, [_rule(within_heading="不存在的标题")]
+        )
+
+    assert report.results == []
+    assert report.diagnostics[0].status == "within_heading_not_found"
+
+
 def test_rule_executor_reports_keywords_not_found() -> None:
     document = _document()
     rule = ExtractionRule("missing", "missing", None, ["不存在"], "value", "金额")
@@ -438,6 +999,32 @@ def test_rule_executor_reports_value_not_found() -> None:
         report = RuleExecutor(indexer).execute_with_diagnostics(document, [_rule()])
 
     assert report.diagnostics[0].status == "value_not_found"
+    assert report.diagnostics[0].candidate_count == 1
+
+
+@pytest.mark.parametrize(
+    ("extract_type", "expected_status"),
+    [
+        ("percentage", "percentage_not_found"),
+        ("number", "number_not_found"),
+        ("date", "date_not_found"),
+        ("time", "time_not_found"),
+    ],
+)
+def test_rule_executor_reports_specific_numeric_not_found_status(
+    extract_type: str,
+    expected_status: str,
+) -> None:
+    paragraph = Paragraph("p_1", "净收入暂未披露。", 1, BBox(0, 0, 10, 10))
+    document = Document("sample.pdf", [Page(1, 100, 100, [paragraph])])
+    with FTSIndexer() as indexer:
+        indexer.build(document)
+
+        report = RuleExecutor(indexer).execute_with_diagnostics(
+            document, [_rule(extract_type)]
+        )
+
+    assert report.diagnostics[0].status == expected_status
     assert report.diagnostics[0].candidate_count == 1
 
 
