@@ -3,11 +3,11 @@
     {
       "id": "net_interest_income",
       "name": "Extract net interest income",
-      "scope": "Financial statements",
-      "within_heading": "Consolidated income statement",
+      "scope": "2025 FINANCIAL STATEMENTS",
+      "within_heading": "Consolidated Financial Statements",
       "keywords": [],
       "table_selector": {
-        "table_title": "Consolidated income statement",
+        "table_title": "Consolidated Income Statement",
         "row_header": "Net interest income",
         "column_header": "2025"
       },

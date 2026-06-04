@@ -3,7 +3,7 @@
     {
       "id": "net_interest_income",
       "name": "Extract net interest income",
-      "scope": "Financial statements",
+      "scope": "Financial review > Financial summary",
       "within_heading": "Consolidated income statement",
       "keywords": [],
       "table_selector": {
