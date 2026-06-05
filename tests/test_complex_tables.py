@@ -10,7 +10,9 @@ import pymupdf
 import pytest
 
 from pdf_extractor.extractor.llm_extractor import MultimodalTableLLMExtractor
+from pdf_extractor.extractor.table_cell_extractor import TableCellExtractor
 from pdf_extractor.extractor.table_extractor import TableExtractor
+from pdf_extractor.extractor.table_extractor import _TableCandidate
 from pdf_extractor.models import BBox, Document, Page, Paragraph
 from pdf_extractor.rules.rule_schema import ExtractionRule
 
@@ -198,6 +200,63 @@ def test_table_extractor_repairs_common_merged_cells() -> None:
         ["East", "10", "20"],
         ["East", "30", "40"],
     ]
+
+
+def test_table_extractor_ignores_tables_that_repair_to_empty_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pages = [
+        _page(bordered=[_table([[None, None]], (50, 20, 500, 180))]),
+        _page(
+            bordered=[
+                _table(
+                    [["Item", "Amount"], ["Net income", "10"]],
+                    (50, 20, 500, 180),
+                )
+            ]
+        ),
+    ]
+    monkeypatch.setattr(
+        "pdf_extractor.extractor.table_extractor.pdfplumber.open",
+        lambda _path: nullcontext(SimpleNamespace(pages=pages)),
+    )
+    document = _document(page_count=2)
+
+    result = TableExtractor().extract(_rule(), document, document.paragraphs)[0]
+
+    assert result.value == [["Item", "Amount"], ["Net income", "10"]]
+    assert result.page_numbers == [2]
+
+
+def test_table_cell_selector_matches_split_title_row_and_column_text() -> None:
+    table = _TableCandidate(
+        rows=[
+            ["C", "onsolidated Inco", "m", "e Statemen", "t", "", ""],
+            ["", "", "", "", "note", "2025", "2024"],
+            ["N", "et interest incom", "e", "", "3", "28,844", "30,784"],
+        ],
+        page_numbers=[1],
+        bboxes=[BBox(50, 50, 500, 200)],
+        page_heights=[800],
+        method="table_text",
+    )
+    document = _document(page_count=1)
+
+    assert TableCellExtractor._candidate_matches_title(
+        table,
+        "Consolidated Income Statement",
+        document,
+    )
+    assert TableCellExtractor._resolve_row_index(
+        {"row_header": "Net interest income"},
+        table,
+        document,
+    ) == 2
+    assert TableCellExtractor._resolve_column_index(
+        {"column_header": "2025"},
+        table,
+        document,
+    ) == 5
 
 
 def test_table_extractor_uses_optional_llm_fallback(

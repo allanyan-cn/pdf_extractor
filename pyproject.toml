@@ -21,5 +21,8 @@ dev = [
     "pytest-cov>=7,<8",
 ]
 
+[tool.setuptools.packages.find]
+include = ["pdf_extractor*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

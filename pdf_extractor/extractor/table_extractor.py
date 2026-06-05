@@ -182,10 +182,11 @@ class TableExtractor:
         candidates: list[_TableCandidate] = []
         for table in tables:
             rows = table.extract()
-            if rows:
+            repaired_rows = self._repair_merged_cells(rows)
+            if repaired_rows:
                 candidates.append(
                     _TableCandidate(
-                        rows=self._repair_merged_cells(rows),
+                        rows=repaired_rows,
                         page_numbers=[page_number],
                         bboxes=[self._bbox(table.bbox)],
                         page_heights=[float(page.height)],
@@ -206,6 +207,8 @@ class TableExtractor:
         ordered = sorted(candidates, key=lambda candidate: (candidate.page_numbers[0], candidate.bbox.y0))
         merged: list[_TableCandidate] = []
         for candidate in ordered:
+            if not candidate.rows:
+                continue
             if merged and self._can_merge(merged[-1], candidate):
                 previous = merged[-1]
                 rows = candidate.rows
@@ -228,6 +231,8 @@ class TableExtractor:
 
         Return whether two adjacent-page tables should be merged.
         """
+        if not previous.rows or not current.rows:
+            return False
         return (
             current.page_numbers[0] == previous.page_numbers[-1] + 1
             and len(current.rows[0]) == len(previous.rows[0])

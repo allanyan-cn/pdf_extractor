@@ -191,9 +191,36 @@ class TableCellExtractor:
                 if cls._candidate_matches_title(candidate, title, document)
             ]
         index = int(selector.get("table_index", 1)) - 1
+        tables = cls._prefer_tables_with_direct_selector_matches(selector, tables)
         if index < 0 or index >= len(tables):
             return None
         return tables[index]
+
+    @classmethod
+    def _prefer_tables_with_direct_selector_matches(
+        cls,
+        selector: dict[str, Any],
+        candidates: list[_TableCandidate],
+    ) -> list[_TableCandidate]:
+        """优先选择 rows 中直接包含目标行列且单元格非空的候选表。
+
+        Prefer candidates whose extracted rows directly contain the requested row,
+        column, and a non-empty selected cell.
+        """
+        if not selector.get("row_header") and not selector.get("column_header"):
+            return candidates
+        matched: list[_TableCandidate] = []
+        for candidate in candidates:
+            row_index = cls._resolve_row_index_from_rows(selector, candidate)
+            column_index = cls._resolve_column_index_from_rows(selector, candidate)
+            if row_index is None or column_index is None:
+                continue
+            if row_index >= len(candidate.rows) or column_index >= len(candidate.rows[row_index]):
+                continue
+            if TableExtractor._clean_cell(candidate.rows[row_index][column_index]) == "":
+                continue
+            matched.append(candidate)
+        return matched or candidates
 
     @staticmethod
     def _candidate_matches_title(
@@ -239,16 +266,38 @@ class TableCellExtractor:
         row_header = selector.get("row_header")
         if not isinstance(row_header, str):
             return None
+        row_index = cls._resolve_row_index_from_rows(selector, table)
+        if row_index is not None:
+            return row_index
+        # 中文：当 pdfplumber rows 缺少行标题时，尝试从表格左侧页面文字恢复行名。
+        # English: If pdfplumber rows miss labels, recover row names from left-side page words.
+        return cls._resolve_row_index_from_page_words(row_header, table, document)
+
+    @classmethod
+    def _resolve_row_index_from_rows(
+        cls,
+        selector: dict[str, Any],
+        table: _TableCandidate,
+    ) -> int | None:
+        """仅从 rows 文本解析行索引，不读取页面 words。
+
+        Resolve a row index from rows only, without reading page words.
+        """
+        if "row_index" in selector:
+            return int(selector["row_index"]) - 1
+        row_header = selector.get("row_header")
+        if not isinstance(row_header, str):
+            return None
         normalized_header = cls._normalize(row_header)
         for index, row in enumerate(table.rows):
+            if normalized_header in cls._normalize("".join(str(cell) for cell in row)):
+                return index
             if any(
                 normalized_header in cls._normalize(str(cell))
                 for cell in row
             ):
                 return index
-        # 中文：当 pdfplumber rows 缺少行标题时，尝试从表格左侧页面文字恢复行名。
-        # English: If pdfplumber rows miss labels, recover row names from left-side page words.
-        return cls._resolve_row_index_from_page_words(row_header, table, document)
+        return None
 
     @classmethod
     def _resolve_column_index(
@@ -266,13 +315,57 @@ class TableCellExtractor:
         column_header = selector.get("column_header")
         if not isinstance(column_header, str) or not table.rows:
             return None
-        normalized_header = cls._normalize(column_header)
-        for index, cell in enumerate(table.rows[0]):
-            if normalized_header in cls._normalize(str(cell)):
-                return index
-        # 中文：当表格首行缺少列标题时，尝试从表格上方或内部页面文字恢复列名。
-        # English: If header cells are missing, recover column labels from nearby page words.
+        column_index = cls._resolve_column_index_from_rows(selector, table)
+        if column_index is not None:
+            return column_index
+        # 中文：当表格 rows 缺少列标题时，尝试从表格上方或内部页面文字恢复列名。
+        # English: If rows miss header cells, recover column labels from nearby page words.
         return cls._resolve_column_index_from_page_words(column_header, table, document)
+
+    @classmethod
+    def _resolve_column_index_from_rows(
+        cls,
+        selector: dict[str, Any],
+        table: _TableCandidate,
+    ) -> int | None:
+        """仅从 rows 文本解析列索引，并避开标题日期中的年份。
+
+        Resolve a column index from rows only, avoiding years in title/date rows.
+        """
+        if "column_index" in selector:
+            return int(selector["column_index"]) - 1
+        column_header = selector.get("column_header")
+        if not isinstance(column_header, str) or not table.rows:
+            return None
+        normalized_header = cls._normalize(column_header)
+        matches: list[tuple[int, int, int]] = []
+        year_pattern = re.compile(r"^\d{4}$")
+        for row in table.rows:
+            row_text = cls._normalize("".join(str(cell) for cell in row))
+            year_count = sum(
+                1
+                for cell in row
+                if year_pattern.fullmatch(cls._normalize(str(cell)))
+            )
+            has_note = any(cls._normalize(str(cell)) == "note" for cell in row)
+            looks_like_date_title = (
+                "yearended" in row_text
+                or "december" in row_text
+                or "january" in row_text
+            )
+            for index, cell in enumerate(row):
+                if normalized_header in cls._normalize(str(cell)):
+                    score = 0
+                    if year_count > 1:
+                        score += 4
+                    if has_note:
+                        score += 2
+                    if looks_like_date_title:
+                        score -= 4
+                    matches.append((score, len(matches), index))
+        if not matches:
+            return None
+        return max(matches, key=lambda item: (item[0], -item[1]))[2]
 
     @classmethod
     def _resolve_row_index_from_page_words(
@@ -457,8 +550,8 @@ class TableCellExtractor:
 
     @staticmethod
     def _normalize(value: str) -> str:
-        """移除空白并大小写折叠，用于标题/行列名匹配。
+        """移除分隔符并大小写折叠，用于标题/行列名匹配。
 
-        Remove whitespace and case-fold for title/header matching.
+        Remove separators and case-fold for title/header matching.
         """
-        return re.sub(r"\s+", "", value).casefold()
+        return re.sub(r"[\W_]+", "", value.casefold())
