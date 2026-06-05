@@ -259,6 +259,156 @@ def test_table_cell_selector_matches_split_title_row_and_column_text() -> None:
     ) == 5
 
 
+def test_table_cell_extractor_extracts_rows_from_rendered_llm_grid() -> None:
+    rows = [["Item", "2025"], ["Net income", "10"]]
+
+    extracted_rows = TableCellExtractor._extract_rows_from_rendered_grid(rows)
+
+    assert extracted_rows == rows
+
+
+def test_table_cell_extractor_uses_llm_reconstructed_table_for_cell_value() -> None:
+    assistant = SimpleNamespace(
+        extract_table=lambda *_args: [["Item", "2025"], ["Net income", "10"]]
+    )
+    document = _document(page_count=1)
+    rule = ExtractionRule(
+        "income_cell",
+        "Extract income cell",
+        None,
+        [],
+        "number",
+        "Net income",
+        table_selector={
+            "row_header": "Net income",
+            "column_header": "2025",
+        },
+        table_strategy="llm",
+        llm_input="text",
+    )
+
+    report = TableCellExtractor(TableExtractor(llm_assistant=assistant)).extract_with_diagnostics(
+        rule,
+        document,
+        document.paragraphs,
+    )
+
+    assert report.status == "success"
+    assert report.results[0].value == "10"
+    assert report.results[0].bbox_source == "table_llm_cell"
+    assert report.results[0].confidence == 0.7
+
+
+def test_table_cell_extractor_augments_llm_rows_with_local_header() -> None:
+    rows = [["Net interest income", "3", "28,844", "30,784"]]
+    document = Document(
+        "sample.pdf",
+        [
+            Page(
+                1,
+                600,
+                800,
+                [
+                    Paragraph("p_header", "note 2025 2024", 1, BBox(10, 10, 100, 30)),
+                ],
+            )
+        ],
+    )
+    rule = ExtractionRule(
+        "income_cell",
+        "Extract income cell",
+        None,
+        [],
+        "number",
+        "Net income",
+        table_selector={
+            "row_header": "Net interest income",
+            "column_header": "2025",
+        },
+        table_strategy="llm",
+        llm_input="text",
+    )
+
+    augmented = TableCellExtractor._augment_llm_rows_with_local_header(
+        rule,
+        document,
+        [1],
+        rows,
+    )
+
+    assert augmented == [["", "note", "2025", "2024"], *rows]
+
+
+def test_table_cell_extractor_ignores_single_year_header_fragment() -> None:
+    rows = [["Net interest income", "3", "28,844", "30,784"]]
+    document = Document(
+        "sample.pdf",
+        [
+            Page(
+                1,
+                600,
+                800,
+                [
+                    Paragraph("p_title", "2025 Financial Statements", 1, BBox(10, 10, 100, 30)),
+                ],
+            )
+        ],
+    )
+    rule = ExtractionRule(
+        "income_cell",
+        "Extract income cell",
+        None,
+        [],
+        "number",
+        "Net income",
+        table_selector={
+            "row_header": "Net interest income",
+            "column_header": "2025",
+        },
+        table_strategy="llm",
+        llm_input="text",
+    )
+
+    augmented = TableCellExtractor._augment_llm_rows_with_local_header(
+        rule,
+        document,
+        [1],
+        rows,
+    )
+
+    assert augmented is None
+
+
+def test_table_cell_extractor_selects_source_paragraph_from_llm_row_header() -> None:
+    paragraphs = [
+        Paragraph("p_1", "Table of contents", 1, BBox(10, 10, 100, 30)),
+        Paragraph("p_toc", "111 3 Net interest income", 1, BBox(10, 40, 100, 60)),
+        Paragraph("p_2", "Net interest income 3 28,844 30,784", 2, BBox(20, 20, 200, 80)),
+    ]
+    rule = ExtractionRule(
+        "income_cell",
+        "Extract income cell",
+        None,
+        [],
+        "number",
+        "Net income",
+        table_selector={
+            "row_header": "Net interest income",
+            "column_header": "2025",
+        },
+        table_strategy="llm",
+        llm_input="text",
+    )
+
+    paragraph = TableCellExtractor._source_paragraph_for_llm_rows(
+        rule,
+        paragraphs,
+        [["Net interest income", "3", "28,844", "30,784"]],
+    )
+
+    assert paragraph == paragraphs[2]
+
+
 def test_table_extractor_uses_optional_llm_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -331,7 +481,9 @@ def test_multimodal_table_llm_extractor_sends_page_image_and_parses_rows(
     def create(**kwargs: Any) -> Any:
         calls.append(kwargs)
         return SimpleNamespace(
-            output_text=json.dumps({"rows": [["Item", "Amount"], ["Net income", "10"]]})
+            output_text=json.dumps(
+                {"column_headers": ["Item", "Amount"], "rows": [["Net income", "10"]]}
+            )
         )
 
     client = SimpleNamespace(responses=SimpleNamespace(create=create))
@@ -358,7 +510,9 @@ def test_multimodal_table_llm_extractor_can_send_candidate_text() -> None:
     def create(**kwargs: Any) -> Any:
         calls.append(kwargs)
         return SimpleNamespace(
-            output_text=json.dumps({"rows": [["Item", "Amount"], ["Net income", "10"]]})
+            output_text=json.dumps(
+                {"column_headers": ["Item", "Amount"], "rows": [["Net income", "10"]]}
+            )
         )
 
     client = SimpleNamespace(responses=SimpleNamespace(create=create))
@@ -377,6 +531,74 @@ def test_multimodal_table_llm_extractor_can_send_candidate_text() -> None:
     assert "[page 1] Net income table" in content[1]["text"]
 
 
+def test_multimodal_table_llm_extractor_falls_back_to_chat_completions() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def create(**kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps(
+                            {
+                                "column_headers": ["Item", "Amount"],
+                                "rows": [["Net income", "10"]],
+                            }
+                        )
+                    )
+                )
+            ]
+        )
+
+    client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("unsupported"))),
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+    )
+    assistant = MultimodalTableLLMExtractor(client, model="local-model")
+
+    rows = assistant.extract_table(
+        _rule(table_strategy="llm", llm_input="text"),
+        _document(page_count=1),
+        [1],
+        BBox(10, 10, 100, 30),
+    )
+
+    assert rows == [["Item", "Amount"], ["Net income", "10"]]
+    assert calls[0]["model"] == "local-model"
+    assert calls[0]["response_format"]["type"] == "json_schema"
+    assert calls[0]["response_format"]["json_schema"]["name"] == "table_rows"
+    assert [item["type"] for item in calls[0]["messages"][0]["content"]] == [
+        "text",
+        "text",
+    ]
+
+
+def test_multimodal_table_llm_extractor_combines_column_headers_and_rows() -> None:
+    payload = {
+        "column_headers": ["Item", "2025"],
+        "rows": [["Net income", "10"]],
+    }
+
+    rows = MultimodalTableLLMExtractor._payload_to_rows(payload)
+
+    assert rows == [["Item", "2025"], ["Net income", "10"]]
+
+
+def test_multimodal_table_llm_extractor_right_aligns_short_column_headers() -> None:
+    payload = {
+        "column_headers": ["note", "2025", "2024"],
+        "rows": [["Net interest income", "3", "28,844", "30,784"]],
+    }
+
+    rows = MultimodalTableLLMExtractor._payload_to_rows(payload)
+
+    assert rows == [
+        ["", "note", "2025", "2024"],
+        ["Net interest income", "3", "28,844", "30,784"],
+    ]
+
+
 def test_multimodal_table_llm_extractor_rejects_invalid_rows(tmp_path: Path) -> None:
     pdf_path = tmp_path / "page.pdf"
     pdf = pymupdf.open()
@@ -385,7 +607,9 @@ def test_multimodal_table_llm_extractor_rejects_invalid_rows(tmp_path: Path) -> 
     pdf.close()
     client = SimpleNamespace(
         responses=SimpleNamespace(
-            create=lambda **_kwargs: SimpleNamespace(output_text='{"rows": "invalid"}')
+            create=lambda **_kwargs: SimpleNamespace(
+                output_text='{"column_headers": [], "rows": "invalid"}'
+            )
         )
     )
 

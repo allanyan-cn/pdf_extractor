@@ -103,6 +103,27 @@ def test_rule_accepts_table_strategy_for_table_extract_type() -> None:
     assert rule.llm_input == "text"
 
 
+def test_rule_accepts_table_strategy_for_table_selector_rule() -> None:
+    rule = ExtractionRule.from_dict(
+        {
+            "id": "income_cell",
+            "name": "income cell",
+            "keywords": ["利润表"],
+            "extract_type": "number",
+            "target": "净收入",
+            "table_selector": {
+                "row_header": "净收入",
+                "column_header": "2025",
+            },
+            "table_strategy": "llm",
+            "llm_input": "text",
+        }
+    )
+
+    assert rule.table_strategy == "llm"
+    assert rule.llm_input == "text"
+
+
 @pytest.mark.parametrize(
     ("override", "message"),
     [

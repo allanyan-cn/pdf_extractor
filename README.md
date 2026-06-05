@@ -137,11 +137,42 @@ python examples/run_extract.py \
   --table-llm-model gpt-4.1-mini
 ```
 
+也可以使用 LM Studio 这类 OpenAI-compatible 本地服务。在项目根目录创建 `.env`：
+
+```bash
+OPENAI_API_KEY=lm-studio
+OPENAI_BASE_URL=http://localhost:1234/v1
+TABLE_LLM_MODEL=your-loaded-model
+```
+
+然后在 LM Studio 中启动本地 server，并加载支持视觉输入的模型。如果只想发送解析后的候选页文本，可以在规则中设置 `"llm_input": "text"`；如果使用默认 `"page_image"`，本地模型必须支持 image input。
+
 规则中可以用 `table_strategy` 控制表格提取方式：
 
 - `auto`：默认，先本地提取，失败后可调用 LLM。
 - `local`：只用本地方法。
 - `llm`：跳过本地表格解析，直接调用 LLM。
+
+`table_selector` 单元格规则也支持 `table_strategy`。当使用 `"table_strategy": "llm"` 时，LLM 会先重建目标表格 rows，程序再把 rows 渲染成带清晰边框的临时 PDF，由 pdfplumber 重新抽取后复用现有行列选择逻辑：
+
+```json
+{
+  "id": "net_interest_income_cell",
+  "name": "Extract net interest income cell",
+  "scope": "2025 FINANCIAL STATEMENTS",
+  "within_heading": "Consolidated Income Statement",
+  "keywords": [],
+  "table_selector": {
+    "table_title": "Consolidated Income Statement",
+    "row_header": "Net interest income",
+    "column_header": "2025"
+  },
+  "extract_type": "number",
+  "target": "Net interest income",
+  "table_strategy": "llm",
+  "llm_input": "page_image"
+}
+```
 
 ## Python API
 

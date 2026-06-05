@@ -1,0 +1,42 @@
+{
+  "file_path": "examples/AR-HASE-2025.pdf",
+  "results": [
+    {
+      "rule_id": "net_interest_income_llm_cell",
+      "value": "28,844",
+      "source_text": "28,844",
+      "page_number": 107,
+      "bbox": {
+        "x0": 299.0007629394531,
+        "y0": 291.6646728515625,
+        "x1": 417.3245391845703,
+        "y1": 369.5760498046875
+      },
+      "confidence": 0.7,
+      "rule_name": "Extract net interest income with LLM table reconstruction",
+      "extract_type": "number",
+      "target": "Net interest income",
+      "normalized_value": "28844",
+      "paragraph_id": "p_0107_0016",
+      "section_title": "Consolidated Financial Statements - Consolidated Income Statement",
+      "section_path": [
+        "Consolidated Financial Statements - Consolidated Income Statement"
+      ],
+      "bbox_source": "table_llm_cell",
+      "page_numbers": null,
+      "bboxes": null
+    }
+  ],
+  "diagnostics": [
+    {
+      "rule_id": "net_interest_income_llm_cell",
+      "status": "success",
+      "message": "Extraction completed successfully.",
+      "scope": "2025 FINANCIAL STATEMENTS",
+      "within_heading": "Consolidated Income Statement",
+      "section_id": "s_0009",
+      "candidate_count": 75,
+      "result_count": 1
+    }
+  ]
+}

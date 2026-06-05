@@ -76,11 +76,13 @@ class ExtractionRule:
         if (
             (self.table_strategy != "auto" or self.llm_input != "page_image")
             and self.extract_type != "table"
+            and not self.table_selector
         ):
-            # 中文：表格策略只影响整表提取，避免普通值规则携带无效 LLM 配置。
-            # English: Table strategy only applies to table extraction, not simple value rules.
+            # 中文：表格策略只影响整表或表格单元格提取，避免普通值规则携带无效 LLM 配置。
+            # English: Table strategy only applies to table/table-cell extraction, not simple value rules.
             raise ValueError(
-                "table_strategy and llm_input can only be customized for extract_type 'table'."
+                "table_strategy and llm_input can only be customized for extract_type "
+                "'table' or rules with table_selector."
             )
         if self.table_strategy == "local" and self.llm_input != "page_image":
             raise ValueError("llm_input cannot be customized when table_strategy is 'local'.")

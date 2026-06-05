@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,7 +19,7 @@ from pdf_extractor.models import BBox, Document, Page, Paragraph, Section, Word
 from pdf_extractor.rules.rule_executor import RuleExecutor
 from pdf_extractor.rules.rule_loader import RuleLoader
 from pdf_extractor.rules.rule_schema import ExtractionRule
-from pdf_extractor.utils.llm_connection import create_openai_client
+from pdf_extractor.utils.llm_connection import create_openai_client, load_dotenv_if_present
 from pdf_extractor.utils.logging import configure_logging
 
 
@@ -1063,6 +1064,25 @@ def test_optional_llm_helpers_construct_client_and_reject_unimplemented_extract(
 
     with pytest.raises(NotImplementedError, match="not implemented"):
         LLMExtractor(client).extract(_rule(), _document().paragraphs)
+
+
+def test_load_dotenv_if_present_sets_missing_environment_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(
+        "OPENAI_API_KEY=from-file\n"
+        "OPENAI_BASE_URL=http://localhost:1234/v1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "existing")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+    load_dotenv_if_present(dotenv)
+
+    assert os.environ["OPENAI_API_KEY"] == "existing"
+    assert os.environ["OPENAI_BASE_URL"] == "http://localhost:1234/v1"
 
 
 def test_configure_logging_accepts_explicit_level() -> None:

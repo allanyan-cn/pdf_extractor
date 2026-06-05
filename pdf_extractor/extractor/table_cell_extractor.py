@@ -5,11 +5,13 @@ Extract typed values from a selected table cell.
 
 from __future__ import annotations
 
+import io
 import re
 from dataclasses import dataclass
 from typing import Any
 
 import pdfplumber
+import pymupdf
 
 from pdf_extractor.extractor.table_extractor import TableExtractor, _TableCandidate
 from pdf_extractor.extractor.text_extractor import TextExtractor
@@ -78,12 +80,41 @@ class TableCellExtractor:
                 "table_selector_not_configured",
                 "The rule does not define table_selector.",
             )
+        if rule.table_strategy == "llm":
+            return self._extract_with_llm(rule, document, paragraphs)
         candidates, _page_numbers, paragraphs_by_page = self.table_extractor.extract_candidates(
             rule,
             document,
             paragraphs,
             require_keyword_match=False,
         )
+        report = self._extract_from_candidates(
+            rule,
+            document,
+            candidates,
+            paragraphs_by_page,
+            bbox_source="table_cell",
+            confidence_cap=0.85,
+        )
+        if report.results or rule.table_strategy == "local":
+            return report
+        llm_report = self._extract_with_llm(rule, document, paragraphs)
+        return llm_report if llm_report.results else report
+
+    def _extract_from_candidates(
+        self,
+        rule: ExtractionRule,
+        document: Document,
+        candidates: list[_TableCandidate],
+        paragraphs_by_page: dict[int, Paragraph],
+        *,
+        bbox_source: str,
+        confidence_cap: float,
+    ) -> TableCellExtractionReport:
+        """从给定表格候选中抽取单元格。
+
+        Extract a cell from the provided table candidates.
+        """
         if not candidates:
             return TableCellExtractionReport(
                 [],
@@ -156,9 +187,9 @@ class TableCellExtractor:
             # English: Result coordinates must point to the approximate cell bbox, not paragraph/table bbox.
             result.paragraph_id = paragraph.id if paragraph else cell_paragraph.id
             result.bbox = cell_bbox
-            result.bbox_source = "table_cell"
+            result.bbox_source = bbox_source
             result.source_text = str(value)
-            result.confidence = min(result.confidence or 0.8, 0.85)
+            result.confidence = min(result.confidence or 0.8, confidence_cap)
         if not results:
             return TableCellExtractionReport(
                 [],
@@ -170,6 +201,253 @@ class TableCellExtractor:
             "success",
             "Table cell extraction completed successfully.",
         )
+
+    def _extract_with_llm(
+        self,
+        rule: ExtractionRule,
+        document: Document,
+        paragraphs: list[Paragraph],
+    ) -> TableCellExtractionReport:
+        """用 LLM 重建表格，再用 pdfplumber 解析清晰边框 PDF 后抽单元格。
+
+        Rebuild the table with LLM, parse a clean bordered PDF with pdfplumber,
+        then extract the selected cell.
+        """
+        if not self.table_extractor.llm_assistant:
+            return TableCellExtractionReport(
+                [],
+                "table_llm_not_configured",
+                "No LLM table assistant is configured.",
+            )
+        paragraphs_by_page = TableExtractor._paragraphs_by_page(paragraphs)
+        page_numbers = self.table_extractor._candidate_page_numbers(
+            document,
+            paragraphs_by_page,
+        )
+        paragraph = paragraphs_by_page.get(min(paragraphs_by_page)) if paragraphs_by_page else None
+        if not page_numbers or not paragraph:
+            return TableCellExtractionReport(
+                [],
+                "table_not_found",
+                "No pages were available for LLM table reconstruction.",
+            )
+        rows = self.table_extractor.llm_assistant.extract_table(
+            rule,
+            document,
+            page_numbers,
+            paragraph.bbox,
+        )
+        if not rows:
+            return TableCellExtractionReport(
+                [],
+                "table_not_found",
+                "LLM did not reconstruct a table for the selected location.",
+            )
+        source_paragraph = self._source_paragraph_for_llm_rows(
+            rule,
+            paragraphs,
+            rows,
+        ) or paragraph
+        candidate = self._llm_rows_to_candidate(
+            rows,
+            document,
+            [source_paragraph.page_number],
+            source_paragraph.bbox,
+        )
+        report = self._extract_from_candidates(
+            rule,
+            document,
+            [candidate],
+            paragraphs_by_page,
+            bbox_source="table_llm_cell",
+            confidence_cap=0.7,
+        )
+        if report.results or report.status != "table_column_not_found":
+            return report
+        augmented_rows = self._augment_llm_rows_with_local_header(
+            rule,
+            document,
+            page_numbers,
+            rows,
+        )
+        if not augmented_rows:
+            return report
+        augmented_candidate = self._llm_rows_to_candidate(
+            augmented_rows,
+            document,
+            [source_paragraph.page_number],
+            source_paragraph.bbox,
+        )
+        return self._extract_from_candidates(
+            rule,
+            document,
+            [augmented_candidate],
+            paragraphs_by_page,
+            bbox_source="table_llm_cell",
+            confidence_cap=0.65,
+        )
+
+    @classmethod
+    def _llm_rows_to_candidate(
+        cls,
+        rows: list[list[Any]],
+        document: Document,
+        page_numbers: list[int],
+        fallback_bbox: BBox,
+    ) -> _TableCandidate:
+        """把 LLM rows 渲染成清晰网格 PDF，再用 pdfplumber 抽回候选表。
+
+        Render LLM rows into a clean grid PDF and extract them back with pdfplumber.
+        """
+        repaired_rows = TableExtractor._repair_merged_cells(rows)
+        rendered_rows = cls._extract_rows_from_rendered_grid(repaired_rows)
+        return _TableCandidate(
+            rendered_rows or repaired_rows,
+            page_numbers,
+            [fallback_bbox],
+            [document.pages[page_number - 1].height for page_number in page_numbers],
+            "table_llm_cell",
+        )
+
+    @classmethod
+    def _augment_llm_rows_with_local_header(
+        cls,
+        rule: ExtractionRule,
+        document: Document,
+        page_numbers: list[int],
+        rows: list[list[Any]],
+    ) -> list[list[Any]] | None:
+        """当 LLM 只返回数据行时，从本地段落补回列头行。
+
+        When LLM returns only data rows, recover the column header row from
+        local parsed paragraphs.
+        """
+        if not rule.table_selector or not rows:
+            return None
+        column_header = rule.table_selector.get("column_header")
+        if not isinstance(column_header, str):
+            return None
+        target_width = max(len(row) for row in rows)
+        normalized_column = cls._normalize(column_header)
+        for paragraph in document.paragraphs:
+            if paragraph.page_number not in set(page_numbers):
+                continue
+            if normalized_column not in cls._normalize(paragraph.text):
+                continue
+            header = cls._header_tokens_from_text(paragraph.text)
+            if len(header) < 2:
+                continue
+            if not header or not any(normalized_column == cls._normalize(cell) for cell in header):
+                continue
+            if len(header) < target_width:
+                header = [""] * (target_width - len(header)) + header
+            elif len(header) > target_width:
+                header = header[-target_width:]
+            return [header, *rows]
+        return None
+
+    @classmethod
+    def _source_paragraph_for_llm_rows(
+        cls,
+        rule: ExtractionRule,
+        paragraphs: list[Paragraph],
+        rows: list[list[Any]],
+    ) -> Paragraph | None:
+        """选择 LLM 单元格结果在原 PDF 中的最佳来源段落。
+
+        Select the best original-PDF source paragraph for an LLM cell result.
+        """
+        if not rule.table_selector:
+            return None
+        row_header = rule.table_selector.get("row_header")
+        if not isinstance(row_header, str):
+            return None
+        normalized_header = cls._normalize(row_header)
+        if not any(
+            normalized_header in cls._normalize("".join(str(cell) for cell in row))
+            for row in rows
+        ):
+            return None
+        row_values = [
+            cls._normalize(str(cell))
+            for row in rows
+            if normalized_header in cls._normalize("".join(str(cell) for cell in row))
+            for cell in row
+            if cls._normalize(str(cell)) and cls._normalize(str(cell)) != normalized_header
+        ]
+        matches: list[tuple[int, Paragraph]] = []
+        for paragraph in paragraphs:
+            normalized_text = cls._normalize(paragraph.text)
+            if normalized_header not in normalized_text:
+                continue
+            score = sum(1 for value in row_values if value in normalized_text)
+            matches.append((score, paragraph))
+        if not matches:
+            return None
+        return max(matches, key=lambda item: item[0])[1]
+
+    @staticmethod
+    def _header_tokens_from_text(text: str) -> list[str]:
+        """从短表头文本中提取 note/年份等列头 token。
+
+        Extract note/year-like column header tokens from a short header string.
+        """
+        return re.findall(r"(?i)\bnote\b|\b\d{4}\b", text)
+
+    @classmethod
+    def _extract_rows_from_rendered_grid(cls, rows: list[list[Any]]) -> list[list[Any]]:
+        """用 pdfplumber 从重绘的清晰边框表格中抽取 rows。
+
+        Extract rows from a redrawn clean bordered table with pdfplumber.
+        """
+        if not rows:
+            return []
+        pdf_bytes = cls._render_rows_to_bordered_pdf(rows)
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            tables = pdf.pages[0].find_tables()
+            if not tables:
+                return []
+            extracted_rows = tables[0].extract()
+        return TableExtractor._repair_merged_cells(extracted_rows)
+
+    @staticmethod
+    def _render_rows_to_bordered_pdf(rows: list[list[Any]]) -> bytes:
+        """把 rows 渲染成有明显边框线的 PDF。
+
+        Render rows as a PDF with clear cell borders.
+        """
+        column_count = max((len(row) for row in rows), default=1)
+        row_count = max(len(rows), 1)
+        margin = 36.0
+        cell_width = 120.0
+        cell_height = 30.0
+        width = margin * 2 + column_count * cell_width
+        height = margin * 2 + row_count * cell_height
+        pdf = pymupdf.open()
+        page = pdf.new_page(width=width, height=height)
+        x0 = margin
+        y0 = margin
+        x1 = x0 + column_count * cell_width
+        y1 = y0 + row_count * cell_height
+        for column_index in range(column_count + 1):
+            x = x0 + column_index * cell_width
+            page.draw_line((x, y0), (x, y1), width=0.8, color=(0, 0, 0))
+        for row_index in range(row_count + 1):
+            y = y0 + row_index * cell_height
+            page.draw_line((x0, y), (x1, y), width=0.8, color=(0, 0, 0))
+        for row_index, row in enumerate(rows):
+            for column_index in range(column_count):
+                value = row[column_index] if column_index < len(row) else ""
+                rect = pymupdf.Rect(
+                    x0 + column_index * cell_width + 3,
+                    y0 + row_index * cell_height + 3,
+                    x0 + (column_index + 1) * cell_width - 3,
+                    y0 + (row_index + 1) * cell_height - 3,
+                )
+                page.insert_textbox(rect, str(value), fontsize=8)
+        pdf_bytes = pdf.tobytes()
+        pdf.close()
+        return pdf_bytes
 
     @classmethod
     def _select_table(

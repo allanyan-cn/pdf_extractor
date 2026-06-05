@@ -1,0 +1,21 @@
+{
+  "rules": [
+    {
+      "id": "net_interest_income_llm_cell",
+      "name": "Extract net interest income with LLM table reconstruction",
+      "scope": "2025 FINANCIAL STATEMENTS",
+      "within_heading": "Consolidated Income Statement",
+      "keywords": [],
+      "table_selector": {
+        "table_title": "Consolidated Income Statement",
+        "row_header": "Net interest income",
+        "column_header": "2025"
+      },
+      "extract_type": "number",
+      "target": "Net interest income",
+      "table_strategy": "llm",
+      "llm_input": "page_image",
+      "priority": 1
+    }
+  ]
+}

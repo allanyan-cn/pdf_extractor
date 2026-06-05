@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -19,11 +20,12 @@ from pdf_extractor.parser.pdf_parser import PDFParser
 from pdf_extractor.rules.rule_executor import RuleExecutor
 from pdf_extractor.rules.rule_loader import RuleLoader
 from pdf_extractor.utils.logging import configure_logging
-from pdf_extractor.utils.llm_connection import create_openai_client
+from pdf_extractor.utils.llm_connection import create_openai_client, load_dotenv_if_present
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
     """Create the CLI argument parser."""
+    load_dotenv_if_present()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pdf", required=True, help="Path to a text-based PDF file.")
     parser.add_argument("--rules", required=True, help="Path to a JSON rule file.")
@@ -35,7 +37,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--table-llm-model",
-        default="gpt-4.1-mini",
+        default=os.getenv("TABLE_LLM_MODEL", "gpt-4.1-mini"),
         help="OpenAI model used by the optional multimodal table fallback.",
     )
     return parser

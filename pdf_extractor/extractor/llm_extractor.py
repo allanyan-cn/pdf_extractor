@@ -37,9 +37,9 @@ class LLMExtractor:
 
 
 class MultimodalTableLLMExtractor:
-    """使用 Responses API 从候选页面重建表格 rows。
+    """使用 OpenAI-compatible API 从候选页面重建表格 rows。
 
-    Reconstruct a candidate table from candidate pages with the Responses API.
+    Reconstruct a candidate table from candidate pages with OpenAI-compatible APIs.
     """
 
     def __init__(self, client: Any, model: str = "gpt-4.1-mini") -> None:
@@ -61,16 +61,26 @@ class MultimodalTableLLMExtractor:
 
         Return table rows from candidate PDF pages without trusting LLM coordinates.
         """
-        # 中文：提示中明确要求只返回 rows，坐标仍由本地定位链路提供。
-        # English: The prompt asks only for rows; coordinates remain owned by local locators.
+        # 中文：提示中明确要求只返回结构化内容，坐标仍由本地定位链路提供。
+        # English: The prompt asks only for structured content; coordinates remain owned by local locators.
         content: list[dict[str, Any]] = [
             {
                 "type": "input_text",
                 "text": (
-                    "Extract the table relevant to the requested target and keywords. "
-                    "Return JSON only with a top-level 'rows' array. Preserve cell text. "
-                    "Do not invent values. Use an empty string for visually merged blank cells.\n"
+                    "Extract the complete target table relevant to the requested target and keywords, "
+                    "not only the target data row. Return JSON only. Preserve cell text. "
+                    "Do not invent values. Use an empty string for visually merged blank cells. "
+                    "Prefer returning the table's column headers separately in 'column_headers'. "
+                    "The column_headers array must align with row cells; include empty strings "
+                    "for row-label columns or note columns when needed. "
+                    "The 'rows' array should contain data rows from the same table. "
+                    "If the header appears as a normal first row in the table, include it in "
+                    "'column_headers' and do not duplicate it in 'rows'. "
+                    "If a table selector is provided, 'column_headers' MUST contain the selected "
+                    "column header when visible, and 'rows' MUST contain the selected row header. "
+                    "Do not return only the target data row unless no header is visible.\n"
                     f"Target: {rule.target}\nKeywords: {', '.join(rule.keywords)}\n"
+                    f"Table selector: {json.dumps(rule.table_selector, ensure_ascii=False)}\n"
                     f"Input mode: {rule.llm_input}\n"
                     f"Candidate bbox for local traceability: {fallback_bbox.to_dict()}"
                 ),
@@ -108,35 +118,107 @@ class MultimodalTableLLMExtractor:
                         }
                     )
 
-        response = self.client.responses.create(
-            model=self.model,
-            input=[{"role": "user", "content": content}],
-            text={
-                "format": {
+        try:
+            response = self.client.responses.create(
+                model=self.model,
+                input=[{"role": "user", "content": content}],
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": "table_rows",
+                        "strict": True,
+                        "schema": self._rows_schema(),
+                    }
+                },
+            )
+            output_text = response.output_text
+            if not output_text or not output_text.strip():
+                raise ValueError("Responses API returned empty output_text.")
+            payload = json.loads(output_text)
+        except Exception:
+            # 中文：LM Studio 等 OpenAI-compatible 服务通常只实现 chat.completions。
+            # English: LM Studio and similar OpenAI-compatible servers usually expose chat completions only.
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": self._to_chat_content(content)}],
+                response_format={
                     "type": "json_schema",
-                    "name": "table_rows",
-                    "strict": True,
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "rows": {
-                                "type": "array",
-                                "items": {
-                                    "type": "array",
-                                    "items": {"type": ["string", "number", "null"]},
-                                },
-                            }
-                        },
-                        "required": ["rows"],
-                        "additionalProperties": False,
+                    "json_schema": {
+                        "name": "table_rows",
+                        "schema": self._rows_schema(),
                     },
-                }
-            },
-        )
-        payload = json.loads(response.output_text)
-        rows = payload.get("rows")
+                },
+            )
+            output_text = response.choices[0].message.content
+            payload = json.loads(output_text)
+        rows = self._payload_to_rows(payload)
         # 中文：严格校验 LLM 输出结构，避免自由文本进入下游表格处理。
         # English: Strictly validate LLM output so free-form text never enters table handling.
         if not isinstance(rows, list) or any(not isinstance(row, list) for row in rows):
             raise ValueError("LLM table response must contain a list of row lists.")
         return rows or None
+
+    @staticmethod
+    def _rows_schema() -> dict[str, Any]:
+        """返回表格 rows 的 JSON Schema。
+
+        Return the JSON Schema for table rows.
+        """
+        return {
+            "type": "object",
+            "properties": {
+                "column_headers": {
+                    "type": "array",
+                    "items": {"type": ["string", "number", "null"]},
+                },
+                "rows": {
+                    "type": "array",
+                    "items": {
+                        "type": "array",
+                        "items": {"type": ["string", "number", "null"]},
+                    },
+                }
+            },
+            "required": ["column_headers", "rows"],
+            "additionalProperties": False,
+        }
+
+    @staticmethod
+    def _payload_to_rows(payload: dict[str, Any]) -> list[list[Any]] | Any:
+        """把 LLM payload 规整成下游使用的 rows。
+
+        Normalize an LLM payload into downstream table rows.
+        """
+        rows = payload.get("rows")
+        column_headers = payload.get("column_headers")
+        if not isinstance(rows, list):
+            return rows
+        if not isinstance(column_headers, list) or not column_headers:
+            return rows
+        if rows and isinstance(rows[0], list) and rows[0] == column_headers:
+            return rows
+        width = max((len(row) for row in rows if isinstance(row, list)), default=0)
+        if width and len(column_headers) < width:
+            column_headers = [""] * (width - len(column_headers)) + column_headers
+        elif width and len(column_headers) > width:
+            column_headers = column_headers[-width:]
+        return [column_headers, *rows]
+
+    @staticmethod
+    def _to_chat_content(content: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """把 Responses API content 转成 chat.completions content。
+
+        Convert Responses API content into chat.completions content.
+        """
+        chat_content: list[dict[str, Any]] = []
+        for item in content:
+            if item["type"] == "input_text":
+                chat_content.append({"type": "text", "text": item["text"]})
+            elif item["type"] == "input_image":
+                chat_content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": item["image_url"]},
+                    }
+                )
+        return chat_content
