@@ -871,6 +871,43 @@ def test_rule_executor_resolves_unique_shorthand_scope() -> None:
     assert report.diagnostics[0].status == "success"
 
 
+@pytest.mark.parametrize(
+    ("section_title", "scope"),
+    [
+        ("  2025 FINANCIAL STATEMENTS  ", "2025 FINANCIAL STATEMENTS"),
+        ("2025 FINANCIAL\u00a0STATEMENTS", "2025 FINANCIAL STATEMENTS"),
+        ("\u200b2025 FINANCIAL STATEMENTS\u200b", "2025 FINANCIAL STATEMENTS"),
+        ("2025 FINANCIAL STATEMENTS", "  2025 FINANCIAL STATEMENTS  "),
+    ],
+)
+def test_rule_executor_ignores_pdf_title_whitespace_in_scope(
+    section_title: str,
+    scope: str,
+) -> None:
+    paragraph = Paragraph(
+        "p_1",
+        "公司净收入为 12.5 亿元。",
+        1,
+        BBox(10, 20, 200, 40),
+        "s_1",
+    )
+    document = Document(
+        "sample.pdf",
+        [Page(1, 300, 400, [paragraph])],
+        [Section("s_1", section_title, 1, 1, 1, ["p_1"])],
+    )
+    with FTSIndexer() as indexer:
+        indexer.build(document)
+
+        report = RuleExecutor(indexer).execute_with_diagnostics(
+            document,
+            [_rule(scope=scope)],
+        )
+
+    assert report.diagnostics[0].status == "success"
+    assert report.results[0].section_title == section_title
+
+
 def test_rule_executor_reports_ambiguous_shorthand_scope() -> None:
     paragraph = Paragraph("p_1", "净收入为 12.5 亿元。", 2, BBox(0, 0, 10, 10), "s_2")
     sections = [

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 import logging
+import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
@@ -551,8 +552,14 @@ class RuleExecutor:
 
     @staticmethod
     def _normalize(value: str) -> str:
-        """移除空白并大小写折叠，用于标题和 scope 比较。
+        """移除 PDF 标题中的空白/不可见字符并大小写折叠。
 
-        Remove whitespace and case-fold for heading/scope comparisons.
+        Remove whitespace/invisible PDF title characters and case-fold for comparisons.
         """
-        return re.sub(r"\s+", "", value).casefold()
+        normalized = unicodedata.normalize("NFKC", value)
+        return "".join(
+            character
+            for character in normalized
+            if not character.isspace()
+            and unicodedata.category(character) not in {"Zl", "Zp", "Zs", "Cf"}
+        ).casefold()

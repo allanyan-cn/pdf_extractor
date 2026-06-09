@@ -78,6 +78,25 @@ python examples/run_extract.py \
   --output /path/to/output.json
 ```
 
+查看 PDF 内嵌的完整目录结构和实际标题：
+
+```bash
+python -m pdf_extractor.utils.show_toc /path/to/report.pdf
+```
+
+该命令直接读取 PDF outline/bookmarks，不使用页面文本推测标题。没有内嵌目录时会输出明确提示。
+
+查看指定印刷页码中本地识别到的表格行标题和列标题：
+
+```bash
+python -m pdf_extractor.utils.show_table_structure \
+  /path/to/report.pdf \
+  --page 12
+```
+
+工具优先按 PDF page label（印刷页码）定位页面，并输出可用于 `table_selector`
+的 `row_header` 和 `column_header` 候选。
+
 ## 最小规则示例
 
 规则文件必须是包含 `rules` 数组的 JSON 对象：

@@ -63,6 +63,18 @@ CLI 参数：
 | `--llm-table-fallback` | 启用 OpenAI 多模态表格能力 |
 | `--table-llm-model MODEL` | 多模态表格使用的模型 |
 
+### 2.1 查看 PDF 实际目录
+
+当阅读器中显示的页面标题与 PDF 内嵌目录标题不一致时，可以直接打印
+outline/bookmarks 中保存的完整目录：
+
+```bash
+python -m pdf_extractor.utils.show_toc /path/to/report.pdf
+```
+
+输出按目录层级缩进，并显示每个条目的目标页码。该工具只显示 PDF 内嵌目录；
+没有内嵌目录时不会根据页面文本生成推测结果。
+
 ## 3. 规则文件结构
 
 规则文件必须是一个包含 `rules` 数组的 JSON 对象：
@@ -138,6 +150,9 @@ CLI 参数：
 ```
 
 路径分隔符支持 `>`、`/` 和 `::`。标题重复但 scope 不完整时，工具不会猜测章节，而是返回 `scope_ambiguous` diagnostics。
+
+`scope` 匹配会忽略标题首尾或内部多余的空白，以及 PDF 中常见的不可断空格、
+零宽空格等不可见字符。诊断和提取结果仍保留 PDF 中的原始章节标题。
 
 提取结果会同时返回 `section_title` 和 `section_path`，便于核对实际命中的章节层级。
 
@@ -361,6 +376,19 @@ CLI 参数：
 | `column_index` | 按列序号选择列，1-based |
 
 行定位必须提供 `row_header` 或 `row_index`；列定位必须提供 `column_header` 或 `column_index`。单元格结果的 `bbox_source` 为 `table_cell`，bbox 使用表格 bbox 按行列网格近似出的单元格坐标。
+
+配置 `table_selector` 前，可以打印指定页面中本地识别到的表格结构：
+
+```bash
+python -m pdf_extractor.utils.show_table_structure \
+  /path/to/report.pdf \
+  --page 12
+```
+
+工具优先把 `--page` 解释为 PDF page label（印刷页码），再回退到物理页序号。
+输出只包含每个逻辑表格的 `row_headers` 和 `column_headers`，可直接选择其中的
+文本写入规则的 `row_header` 和 `column_header`。识别时会结合表格 rows 和页面
+word 坐标，恢复 pdfplumber 可能遗漏在数值区域外的行标题。
 
 ### 6.3 表格策略
 
