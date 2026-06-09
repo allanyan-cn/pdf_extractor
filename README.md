@@ -17,7 +17,7 @@
 - 可选 OpenAI 多模态模型重建复杂表格。
 - 每条规则返回 diagnostics，便于定位无结果原因。
 
-当前不处理 OCR、纯扫描件 PDF、图片文字识别、Web UI 或复杂规则 DSL。
+当前不处理 OCR、纯扫描件 PDF、图片文字识别或复杂规则 DSL。
 
 ## 环境要求
 
@@ -50,6 +50,29 @@ python -m pip install -e ".[dev]"
 
 # 可选 OpenAI 多模态表格能力
 python -m pip install -e ".[llm]"
+
+# 可视化规则工作台
+python -m pip install -e ".[studio]"
+```
+
+## 可视化规则工作台
+
+Rule Studio 一次编辑一个规则，用于上传 PDF、通过侧栏目录定位章节、即时试跑并在
+页面上核对来源坐标。主区域左侧预览 PDF，右侧编辑当前规则。
+
+当抽取内容选择 `table` 时，工作台会识别当前页面上的所有本地表格：
+
+- 选择 `Whole table` 可提取指定页的指定表格。
+- 选择 `Single cell` 后，可继续选择 `row_header`、`column_header` 和单元格值类型。
+
+```bash
+streamlit run rule_studio/app.py
+```
+
+也可以直接使用虚拟环境中的命令：
+
+```bash
+.venv/bin/streamlit run rule_studio/app.py
 ```
 
 ## 快速开始

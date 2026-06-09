@@ -461,6 +461,13 @@ class TableCellExtractor:
         Select the target table by table_title/table_index.
         """
         tables = candidates
+        page_number = selector.get("page_number")
+        if page_number is not None:
+            tables = [
+                candidate
+                for candidate in tables
+                if int(page_number) in candidate.page_numbers
+            ]
         title = selector.get("table_title")
         if isinstance(title, str) and title.strip():
             tables = [

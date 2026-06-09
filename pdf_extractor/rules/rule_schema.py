@@ -51,11 +51,10 @@ class ExtractionRule:
         if self.within_heading is not None and not isinstance(self.within_heading, str):
             raise ValueError("within_heading must be a string or null.")
         if self.table_selector is not None:
-            self._validate_table_selector(self.table_selector)
-            # 中文：table_selector 表示“从表格中抽一个简单值”，不能和整表提取混用。
-            # English: table_selector extracts one simple value, so it cannot be used with table output.
-            if self.extract_type == "table":
-                raise ValueError("table_selector cannot be used with extract_type 'table'.")
+            self._validate_table_selector(
+                self.table_selector,
+                whole_table=self.extract_type == "table",
+            )
         if not isinstance(self.keywords, list) or any(
             not isinstance(keyword, str) or not keyword.strip()
             for keyword in self.keywords
@@ -152,7 +151,11 @@ class ExtractionRule:
         )
 
     @staticmethod
-    def _validate_table_selector(selector: dict[str, Any]) -> None:
+    def _validate_table_selector(
+        selector: dict[str, Any],
+        *,
+        whole_table: bool = False,
+    ) -> None:
         """校验表格单元格定位配置。
 
         Validate table cell selector configuration.
@@ -162,6 +165,7 @@ class ExtractionRule:
         allowed_fields = {
             "table_title",
             "table_index",
+            "page_number",
             "row_header",
             "row_index",
             "column_header",
@@ -172,10 +176,26 @@ class ExtractionRule:
             raise ValueError(
                 f"Unexpected table_selector fields: {', '.join(unexpected_fields)}."
             )
-        if "row_header" not in selector and "row_index" not in selector:
-            raise ValueError("table_selector requires row_header or row_index.")
-        if "column_header" not in selector and "column_index" not in selector:
-            raise ValueError("table_selector requires column_header or column_index.")
+        if whole_table:
+            cell_fields = {
+                "row_header",
+                "row_index",
+                "column_header",
+                "column_index",
+            }
+            if cell_fields.intersection(selector):
+                raise ValueError(
+                    "table extraction table_selector cannot contain row or column fields."
+                )
+            if "table_title" not in selector and "table_index" not in selector:
+                raise ValueError(
+                    "table extraction table_selector requires table_title or table_index."
+                )
+        else:
+            if "row_header" not in selector and "row_index" not in selector:
+                raise ValueError("table_selector requires row_header or row_index.")
+            if "column_header" not in selector and "column_index" not in selector:
+                raise ValueError("table_selector requires column_header or column_index.")
         # 中文：文本字段用于模糊匹配，必须是非空字符串；序号字段使用 1-based 正整数。
         # English: Text fields are non-empty match labels; index fields are 1-based positives.
         for field_name in ("table_title", "row_header", "column_header"):
@@ -183,7 +203,7 @@ class ExtractionRule:
                 not isinstance(selector[field_name], str) or not selector[field_name].strip()
             ):
                 raise ValueError(f"table_selector.{field_name} must be a non-empty string.")
-        for field_name in ("table_index", "row_index", "column_index"):
+        for field_name in ("table_index", "page_number", "row_index", "column_index"):
             if field_name in selector and (
                 not isinstance(selector[field_name], int)
                 or isinstance(selector[field_name], bool)

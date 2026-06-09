@@ -247,7 +247,22 @@ def test_rule_rejects_invalid_table_selector(
         ExtractionRule.from_dict(data)
 
 
-def test_rule_rejects_table_selector_for_table_extract_type() -> None:
+def test_rule_accepts_table_index_selector_for_table_extract_type() -> None:
+    rule = ExtractionRule.from_dict(
+        {
+            "id": "table",
+            "name": "table",
+            "keywords": [],
+            "extract_type": "table",
+            "target": "利润表",
+            "table_selector": {"page_number": 2, "table_index": 1},
+        }
+    )
+
+    assert rule.table_selector == {"page_number": 2, "table_index": 1}
+
+
+def test_rule_rejects_cell_selector_for_table_extract_type() -> None:
     data = {
         "id": "cell",
         "name": "cell",
@@ -257,7 +272,7 @@ def test_rule_rejects_table_selector_for_table_extract_type() -> None:
         "table_selector": {"row_index": 1, "column_index": 1},
     }
 
-    with pytest.raises(ValueError, match="table_selector"):
+    with pytest.raises(ValueError, match="row or column"):
         ExtractionRule.from_dict(data)
 
 

@@ -564,6 +564,56 @@ def test_table_extractor_reads_real_single_page_table(tmp_path: Path) -> None:
     assert result.bbox_source == "table"
 
 
+def test_table_extractor_selects_whole_table_by_page_and_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page_one_table = SimpleNamespace(
+        bbox=(50, 100, 250, 160),
+        extract=lambda: [["Page", "Value"], ["One", "1"]],
+    )
+    page_two_table = SimpleNamespace(
+        bbox=(50, 100, 250, 160),
+        extract=lambda: [["Page", "Value"], ["Two", "2"]],
+    )
+    pages = [
+        SimpleNamespace(height=400, find_tables=lambda **_kwargs: [page_one_table]),
+        SimpleNamespace(height=400, find_tables=lambda **_kwargs: [page_two_table]),
+    ]
+    monkeypatch.setattr(
+        "pdf_extractor.extractor.table_extractor.pdfplumber.open",
+        lambda _path: nullcontext(SimpleNamespace(pages=pages)),
+    )
+    paragraphs = [
+        Paragraph("p_1", "Page one", 1, BBox(50, 50, 250, 80)),
+        Paragraph("p_2", "Page two", 2, BBox(50, 50, 250, 80)),
+    ]
+    document = Document(
+        "sample.pdf",
+        [
+            Page(1, 300, 400, [paragraphs[0]]),
+            Page(2, 300, 400, [paragraphs[1]]),
+        ],
+    )
+    rule = ExtractionRule(
+        "table_rule",
+        "Extract selected table",
+        None,
+        [],
+        "table",
+        "Selected table",
+        table_selector={"page_number": 2, "table_index": 1},
+    )
+
+    result = TableExtractor(include_adjacent_pages=False).extract(
+        rule,
+        document,
+        paragraphs,
+    )[0]
+
+    assert result.value[1] == ["Two", "2"]
+    assert result.page_number == 2
+
+
 def test_rule_executor_extracts_typed_cell_by_table_title_row_and_column(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

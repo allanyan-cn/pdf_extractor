@@ -2,6 +2,10 @@
 pymupdf>=1.27,<2
 pdfplumber>=0.11,<1
 
+# Optional visual Rule Studio
+streamlit>=1.40,<2
+streamlit-antd-components>=0.3.2,<0.4
+
 # Optional LLM fallback
 openai>=2,<3
 

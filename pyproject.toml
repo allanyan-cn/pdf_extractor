@@ -13,6 +13,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+studio = [
+    "streamlit>=1.40,<2",
+    "streamlit-antd-components>=0.3.2,<0.4",
+]
 llm = [
     "openai>=2,<3",
 ]
@@ -22,7 +26,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["pdf_extractor*"]
+include = ["pdf_extractor*", "rule_studio*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -132,6 +132,17 @@ class TableExtractor:
         """
         paragraphs_by_page = self._paragraphs_by_page(paragraphs)
         page_numbers = self._candidate_page_numbers(document, paragraphs_by_page)
+        selected_page = (
+            rule.table_selector.get("page_number")
+            if rule.table_selector
+            else None
+        )
+        if selected_page is not None:
+            page_numbers = [
+                page_number
+                for page_number in page_numbers
+                if page_number == int(selected_page)
+            ]
         if not page_numbers:
             return [], [], paragraphs_by_page
 
@@ -153,6 +164,11 @@ class TableExtractor:
             if require_keyword_match
             else merged
         )
+        if rule.extract_type == "table" and rule.table_selector:
+            table_index = rule.table_selector.get("table_index")
+            if table_index is not None:
+                index = int(table_index) - 1
+                matched = [matched[index]] if 0 <= index < len(matched) else []
         return matched, page_numbers, paragraphs_by_page
 
     def _page_candidates(self, page: Any, page_number: int) -> list[_TableCandidate]:

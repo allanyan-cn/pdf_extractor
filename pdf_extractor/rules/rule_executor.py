@@ -201,7 +201,7 @@ class RuleExecutor:
             cell_status: str | None = None
             cell_message: str | None = None
             extractor = self.extractors[rule.extract_type]
-            if rule.table_selector:
+            if rule.table_selector and rule.extract_type != "table":
                 # 中文：第四级是表格定位；table_selector 返回更细粒度的行/列诊断。
                 # English: Table selection is the fourth level and returns granular row/column diagnostics.
                 cell_report = self.table_cell_extractor.extract_with_diagnostics(
@@ -250,7 +250,7 @@ class RuleExecutor:
                 # English: On failure, choose the most specific status; table-cell diagnostics win.
                 status = (
                     cell_status or "table_cell_not_found"
-                    if rule.table_selector
+                    if rule.table_selector and rule.extract_type != "table"
                     else "table_not_found"
                     if rule.extract_type == "table"
                     else "percentage_not_found"
