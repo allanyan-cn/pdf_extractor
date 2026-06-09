@@ -111,7 +111,7 @@ python -m pdf_extractor.utils.show_toc /path/to/report.pdf
 | `normalization` | 否 | 仅支持 `number`、`percentage`、`date`、`time` |
 | `table_strategy` | 否 | 仅支持 `extract_type: "table"`。`auto`、`local` 或 `llm`，默认 `auto` |
 | `llm_input` | 否 | 仅支持 `extract_type: "table"` 且 `table_strategy` 非 `local`。`page_image` 或 `text`，默认 `page_image` |
-| `priority` | 否 | 执行优先级，数值越大越先执行，默认为 `0` |
+| `priority` | 否 | 执行优先级，数值越小越先执行，默认为 `0` |
 
 ## 4. 定位逻辑
 

@@ -116,7 +116,7 @@ class RuleExecutor:
         diagnostics: list[RuleDiagnostic] = []
         sections_by_id = {section.id: section for section in document.sections}
         logger = logging.getLogger(__name__)
-        for rule in sorted(rules, key=lambda item: (-item.priority, item.id)):
+        for rule in sorted(rules, key=lambda item: (item.priority, item.id)):
             # 中文：定位顺序的第一级是 scope；scope 不明确时不继续猜测。
             # English: Scope is the first locator level; ambiguous scopes stop execution.
             scope_resolution = self.resolve_scope_details(document, rule.scope)

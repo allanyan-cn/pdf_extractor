@@ -85,7 +85,40 @@ def test_rule_loader_loads_and_sorts_rules_by_priority(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    assert [rule.id for rule in RuleLoader().load(str(path))] == ["high", "low"]
+    assert [rule.id for rule in RuleLoader().load(str(path))] == ["low", "high"]
+
+
+def test_rule_executor_runs_lower_priority_numbers_first() -> None:
+    document = _document()
+    rules = [
+        ExtractionRule(
+            "later",
+            "Later rule",
+            "不存在的章节",
+            ["净收入"],
+            "value",
+            "净收入",
+            priority=10,
+        ),
+        ExtractionRule(
+            "first",
+            "First rule",
+            "不存在的章节",
+            ["净收入"],
+            "value",
+            "净收入",
+            priority=1,
+        ),
+    ]
+    with FTSIndexer() as indexer:
+        indexer.build(document)
+
+        report = RuleExecutor(indexer).execute_with_diagnostics(document, rules)
+
+    assert [diagnostic.rule_id for diagnostic in report.diagnostics] == [
+        "first",
+        "later",
+    ]
 
 
 def test_rule_loader_rejects_duplicate_ids(tmp_path: Path) -> None:

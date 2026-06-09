@@ -37,4 +37,4 @@ class RuleLoader:
         # English: Duplicate rule ids make diagnostics ambiguous, so reject them early.
         if len(rule_ids) != len(set(rule_ids)):
             raise ValueError("Rule ids must be unique.")
-        return sorted(rules, key=lambda rule: (-rule.priority, rule.id))
+        return sorted(rules, key=lambda rule: (rule.priority, rule.id))
