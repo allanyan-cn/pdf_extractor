@@ -9,6 +9,7 @@ from typing import Any
 
 from pdf_extractor.models import Page, Paragraph, Word
 from pdf_extractor.utils.bbox import BBox
+from pdf_extractor.utils.text import strip_footnote_markers
 
 
 class ParagraphBuilder:
@@ -30,7 +31,7 @@ class ParagraphBuilder:
             x0, y0, x1, y1, text, block_number, *_rest = word
             words_by_block.setdefault(int(block_number), []).append(
                 Word(
-                    text=str(text),
+                    text=strip_footnote_markers(str(text)),
                     bbox=BBox(float(x0), float(y0), float(x1), float(y1)),
                 )
             )
@@ -38,7 +39,7 @@ class ParagraphBuilder:
         # English: V1 treats each PDF text block as a paragraph to keep parsing simple.
         for block in pdf_page.get_text("blocks", sort=True):
             x0, y0, x1, y1, text, block_number, *_rest = block
-            normalized_text = " ".join(text.split())
+            normalized_text = strip_footnote_markers(str(text))
             if not normalized_text:
                 continue
             paragraphs.append(

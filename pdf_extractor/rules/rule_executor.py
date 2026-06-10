@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import re
 import logging
-import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,6 +24,7 @@ from pdf_extractor.models import (
     Section,
 )
 from pdf_extractor.rules.rule_schema import ExtractionRule
+from pdf_extractor.utils.text import normalize_match_text
 
 SCOPE_SEPARATOR_PATTERN = re.compile(r"\s*(?:>|/|::)\s*")
 WITHIN_HEADING_PAGE_WINDOW = 3
@@ -556,10 +556,4 @@ class RuleExecutor:
 
         Remove whitespace/invisible PDF title characters and case-fold for comparisons.
         """
-        normalized = unicodedata.normalize("NFKC", value)
-        return "".join(
-            character
-            for character in normalized
-            if not character.isspace()
-            and unicodedata.category(character) not in {"Zl", "Zp", "Zs", "Cf"}
-        ).casefold()
+        return normalize_match_text(value)

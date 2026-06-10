@@ -18,6 +18,7 @@ from pdf_extractor.extractor.text_extractor import TextExtractor
 from pdf_extractor.extractor.value_extractor import ValueExtractor
 from pdf_extractor.models import BBox, Document, ExtractionResult, Paragraph
 from pdf_extractor.rules.rule_schema import ExtractionRule
+from pdf_extractor.utils.text import normalize_match_text
 
 
 @dataclass(frozen=True)
@@ -156,7 +157,12 @@ class TableCellExtractor:
                 "table_column_not_found",
                 "The configured column_index is outside the selected row.",
             )
-        value = TableExtractor._clean_cell(table.rows[row_index][column_index])
+        value = self._value_with_adjacent_unit(
+            rule,
+            table,
+            row_index,
+            column_index,
+        )
         if value == "":
             return TableCellExtractionReport(
                 [],
@@ -201,6 +207,27 @@ class TableCellExtractor:
             "success",
             "Table cell extraction completed successfully.",
         )
+
+    @staticmethod
+    def _value_with_adjacent_unit(
+        rule: ExtractionRule,
+        table: _TableCandidate,
+        row_index: int,
+        column_index: int,
+    ) -> str:
+        """Attach a standalone preceding percentage unit to its numeric value."""
+        value = TableExtractor._clean_cell(table.rows[row_index][column_index])
+        if (
+            rule.extract_type != "percentage"
+            or "%" in value
+            or row_index <= 0
+            or column_index >= len(table.rows[row_index - 1])
+        ):
+            return value
+        previous_value = TableExtractor._clean_cell(
+            table.rows[row_index - 1][column_index]
+        )
+        return f"{value}%" if previous_value == "%" else value
 
     def _extract_with_llm(
         self,
@@ -805,7 +832,10 @@ class TableCellExtractor:
             target["top"] = min(target["top"], float(word["top"]))
             target["bottom"] = max(target["bottom"], float(word["bottom"]))
             target["center_y"] = (target["top"] + target["bottom"]) / 2
-            target["text"] = " ".join(str(item["text"]) for item in target["words"])
+            target["words"].sort(key=lambda item: float(item["x0"]))
+            target["text"] = " ".join(
+                str(item["text"]) for item in target["words"]
+            )
         return lines
 
     @staticmethod
@@ -839,4 +869,4 @@ class TableCellExtractor:
 
         Remove separators and case-fold for title/header matching.
         """
-        return re.sub(r"[\W_]+", "", value.casefold())
+        return re.sub(r"[\W_]+", "", normalize_match_text(value))

@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
-import json
 import sys
 from pathlib import Path
 from typing import Any
 
 import streamlit as st
+import streamlit.components.v1 as components
 import streamlit_antd_components as sac
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
+
+PDF_WHEEL_VIEWER = components.declare_component(
+    "pdf_wheel_viewer",
+    path=str(ROOT_DIR / "rule_studio" / "components" / "pdf_wheel_viewer"),
+)
 
 from pdf_extractor.models import Document, ExecutionReport
 from pdf_extractor.rules.rule_schema import ExtractionRule
@@ -26,10 +32,12 @@ from rule_studio.services import (
     parse_uploaded_pdf,
     render_page_png,
     report_json,
+    result_table_rows,
     resolve_tree_selection,
     rule_to_payload,
     rules_json,
-    section_label,
+    scope_for_page,
+    section_for_page,
     validate_rule_payload,
 )
 
@@ -68,30 +76,91 @@ def initialize_state() -> None:
         "report": None,
         "loaded_pdf_digest": None,
         "selected_page": 1,
+        "page_input": 1,
         "selected_section": None,
         "data_scope": "Paragraph",
         "paragraph_extract_type": "text",
         "table_output": "Whole table",
         "selected_table_index": 1,
+        "last_pdf_wheel_event": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
 
 
-def parse_optional_json(value: str, field_name: str) -> dict[str, Any] | None:
-    """Parse an optional JSON object from a textarea."""
-    if not value.strip():
+def render_normalization_controls(
+    extract_type: str,
+    payload: dict[str, Any],
+    *,
+    key_prefix: str,
+) -> dict[str, Any] | None:
+    """Render the supported normalization choices for one extraction type."""
+    if extract_type not in {"number", "percentage", "date", "time"}:
         return None
-    parsed = json.loads(value)
-    if not isinstance(parsed, dict):
-        raise ValueError(f"{field_name} must be a JSON object.")
-    return parsed
+    with st.expander("Normalization"):
+        if extract_type in {"date", "time"}:
+            st.selectbox(
+                "Normalization mode",
+                ["Automatic"],
+                disabled=True,
+                key=f"{key_prefix}_automatic_normalization",
+                help="Date and time values are normalized automatically.",
+            )
+            return None
+
+        modes = {
+            "Treat parentheses as negative": "negative",
+            "Treat parentheses as positive": "positive",
+            "Preserve parenthesized value": "preserve",
+        }
+        current_mode = (payload.get("normalization") or {}).get(
+            "parentheses",
+            "negative",
+        )
+        current_label = next(
+            (
+                label
+                for label, value in modes.items()
+                if value == current_mode
+            ),
+            "Treat parentheses as negative",
+        )
+        selected_label = st.selectbox(
+            "Parenthesized values",
+            list(modes),
+            index=list(modes).index(current_label),
+            key=f"{key_prefix}_parentheses_normalization",
+        )
+        return {"parentheses": modes[selected_label]}
 
 
 def validate_current_rule() -> ExtractionRule:
     """Validate the only rule edited by Rule Studio."""
     return validate_rule_payload(st.session_state.rule)
+
+
+def apply_tree_selection(
+    document: Document,
+    section_ids: list[str],
+    selection: int | list[int] | None,
+) -> bool:
+    """Navigate to a TOC item selected in the sidebar."""
+    resolved_selection = resolve_tree_selection(
+        document,
+        section_ids,
+        selection,
+    )
+    if resolved_selection is None:
+        return False
+    section_id, start_page = resolved_selection
+    if section_id == st.session_state["selected_section"]:
+        return False
+    st.session_state["selected_section"] = section_id
+    st.session_state["selected_page"] = start_page
+    st.session_state["page_input"] = start_page
+    st.session_state["report"] = None
+    return True
 
 
 def render_sidebar() -> Document | None:
@@ -115,6 +184,13 @@ def render_sidebar() -> Document | None:
             st.sidebar.error(f"PDF parse error: {error}")
 
     if document is not None:
+        active_section = section_for_page(
+            document,
+            st.session_state.selected_page,
+        )
+        st.session_state.selected_section = (
+            active_section.id if active_section is not None else None
+        )
         tree_items, section_ids = document_tree(document)
         with st.sidebar:
             st.subheader("Document Structure")
@@ -124,6 +200,10 @@ def render_sidebar() -> Document | None:
                     if st.session_state.selected_section in section_ids
                     else None
                 )
+                tree_key = (
+                    f"document_tree_{st.session_state.loaded_pdf_digest}_"
+                    f"{st.session_state.selected_section or 'none'}"
+                )
                 selection = sac.tree(
                     items=tree_items,
                     index=selected_index,
@@ -132,18 +212,10 @@ def render_sidebar() -> Document | None:
                     show_line=True,
                     return_index=True,
                     size="sm",
-                    key=f"document_tree_{st.session_state.loaded_pdf_digest}",
+                    key=tree_key,
                 )
-                resolved_selection = resolve_tree_selection(
-                    document,
-                    section_ids,
-                    selection,
-                )
-                if resolved_selection is not None:
-                    section_id, start_page = resolved_selection
-                    if section_id != st.session_state.selected_section:
-                        st.session_state.selected_section = section_id
-                        st.session_state.selected_page = start_page
+                if apply_tree_selection(document, section_ids, selection):
+                    st.rerun()
             else:
                 st.info("No document sections were detected.")
             st.caption(
@@ -162,36 +234,33 @@ def render_rule_editor(document: Document | None) -> list[dict[str, float]]:
     rule_id = st.text_input("Rule id", value=payload.get("id", ""))
     name = st.text_input("Name", value=payload.get("name", ""))
     target = st.text_input("Target", value=payload.get("target", ""))
-    data_scope = st.radio(
-        "Extraction range",
-        ["Paragraph", "Table"],
-        horizontal=True,
-        key="data_scope",
+    scope = (
+        scope_for_page(document, st.session_state.selected_page)
+        if document is not None
+        else payload.get("scope")
     )
-
-    st.markdown("**Location Scope**")
-    scope_help = "Use a full section path with ' > ' when titles repeat."
-    if document and document.sections:
-        scope_help += " Select a chapter in the sidebar to use its full path."
-    scope = st.text_input(
-        "Scope",
-        value=payload.get("scope") or "",
-        help=scope_help,
-    )
-    if document and st.session_state.selected_section:
-        selected_scope = section_label(document, st.session_state.selected_section)
-        if st.button("Use selected chapter as scope", use_container_width=True):
-            st.session_state.rule["scope"] = selected_scope
-            st.session_state.rule_revision += 1
-            st.rerun()
+    st.markdown(f"**Scope:** {scope or 'No TOC section for this page'}")
+    if payload.get("scope") != scope:
+        st.session_state.rule["scope"] = scope
+        st.session_state.report = None
     within_heading = st.text_input(
         "Within heading",
         value=payload.get("within_heading") or "",
     )
 
+    st.markdown("**Extraction Range**")
+    data_scope = sac.tabs(
+        ["Paragraph", "Table"],
+        index=0 if st.session_state.data_scope == "Paragraph" else 1,
+        variant="outline",
+        use_container_width=True,
+        key="extraction_range_tabs",
+    )
+    st.session_state.data_scope = data_scope
+
     keywords_text = ""
     table_selector = None
-    normalization_text = ""
+    normalization = None
     table_strategy = "auto"
     llm_input = "page_image"
 
@@ -208,18 +277,11 @@ def render_rule_editor(document: Document | None) -> list[dict[str, float]]:
             value="\n".join(payload.get("keywords", [])),
             help="One keyword per line.",
         )
-        if extract_type in {"number", "percentage", "date", "time"}:
-            with st.expander("Normalization"):
-                normalization_text = st.text_area(
-                    "Normalization JSON",
-                    value=json.dumps(
-                        payload.get("normalization"),
-                        ensure_ascii=False,
-                        indent=2,
-                    )
-                    if payload.get("normalization")
-                    else "",
-                )
+        normalization = render_normalization_controls(
+            extract_type,
+            payload,
+            key_prefix="paragraph",
+        )
     else:
         st.markdown("**Table Extraction**")
         table_output = st.radio(
@@ -265,17 +327,6 @@ def render_rule_editor(document: Document | None) -> list[dict[str, float]]:
                 table for table in tables if table.table_index == selected_table_index
             )
             highlights.append(as_bbox_dict(selected_table.bbox))
-            st.caption(
-                f"Page {st.session_state.selected_page} · {selected_table.label}"
-            )
-            if selected_table.column_headers:
-                st.caption(
-                    "Column headers: " + ", ".join(selected_table.column_headers)
-                )
-            if selected_table.row_headers:
-                st.caption(
-                    f"Detected row headers: {len(selected_table.row_headers)}"
-                )
             if table_output == "Whole table":
                 table_selector = {
                     "page_number": st.session_state.selected_page,
@@ -284,7 +335,6 @@ def render_rule_editor(document: Document | None) -> list[dict[str, float]]:
                 extract_type = "table"
             else:
                 cell_types = ["text", "value", "number", "percentage", "date", "time"]
-                extract_type = st.selectbox("Cell value type", cell_types)
                 row_header = st.selectbox(
                     "Row header",
                     selected_table.row_headers,
@@ -296,6 +346,12 @@ def render_rule_editor(document: Document | None) -> list[dict[str, float]]:
                     selected_table.column_headers,
                     index=None,
                     placeholder="Select a column header",
+                )
+                extract_type = st.selectbox("Cell value type", cell_types)
+                normalization = render_normalization_controls(
+                    extract_type,
+                    payload,
+                    key_prefix="cell",
                 )
                 if row_header and column_header:
                     table_selector = {
@@ -325,14 +381,12 @@ def render_rule_editor(document: Document | None) -> list[dict[str, float]]:
                 "priority": 0,
                 "within_heading": within_heading.strip() or None,
                 "table_selector": table_selector,
-                "normalization": parse_optional_json(
-                    normalization_text, "normalization"
-                ),
+                "normalization": normalization,
                 "table_strategy": table_strategy,
                 "llm_input": llm_input,
             }
             validated = validate_rule_payload(updated)
-        except (json.JSONDecodeError, TypeError, ValueError) as error:
+        except (TypeError, ValueError) as error:
             st.error(str(error))
         else:
             st.session_state.rule = rule_to_payload(validated)
@@ -398,7 +452,17 @@ def render_pdf_viewer(
             len(document.pages),
         )
 
-    navigation = st.columns([1, 1.5, 1])
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stNumberInput"] button {
+            display: none;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    navigation = st.columns([1, 1.5, 1], vertical_alignment="center")
     with navigation[0]:
         st.button(
             "Previous page",
@@ -408,13 +472,19 @@ def render_pdf_viewer(
             args=(-1,),
         )
     with navigation[1]:
+        st.session_state.page_input = st.session_state.selected_page
+
+        def use_page_input() -> None:
+            st.session_state.selected_page = int(st.session_state.page_input)
+
         page_number = st.number_input(
             "Page",
             min_value=1,
             max_value=len(document.pages),
             step=1,
-            key="selected_page",
+            key="page_input",
             label_visibility="collapsed",
+            on_change=use_page_input,
         )
     with navigation[2]:
         st.button(
@@ -434,8 +504,29 @@ def render_pdf_viewer(
         for box in highlights
     )
     image = cached_page_image(document.file_path, int(page_number), highlight_key)
-    st.image(image, use_container_width=True)
-    st.caption("Orange boxes show the selected paragraph and extraction results.")
+    wheel_event = PDF_WHEEL_VIEWER(
+        image_base64=base64.b64encode(image).decode("ascii"),
+        page_number=int(page_number),
+        page_count=len(document.pages),
+        key="pdf_wheel_viewer",
+        default=None,
+    )
+    if (
+        isinstance(wheel_event, dict)
+        and wheel_event.get("event_id")
+        and wheel_event["event_id"] != st.session_state.last_pdf_wheel_event
+    ):
+        st.session_state.last_pdf_wheel_event = wheel_event["event_id"]
+        direction = wheel_event.get("direction")
+        if direction == "previous":
+            change_page(-1)
+        elif direction == "next":
+            change_page(1)
+        st.rerun()
+    st.caption(
+        "Scroll over the preview to change pages. Orange boxes show selected "
+        "tables and extraction results."
+    )
 
 
 def render_execution(document: Document) -> None:
@@ -469,16 +560,7 @@ def render_execution(document: Document) -> None:
             st.json(diagnostic.to_dict())
     if report.results:
         st.dataframe(
-            [
-                {
-                    "rule_id": result.rule_id,
-                    "value": result.value,
-                    "page": result.page_number,
-                    "confidence": result.confidence,
-                    "source": result.source_text,
-                }
-                for result in report.results
-            ],
+            result_table_rows(report),
             use_container_width=True,
             hide_index=True,
         )
@@ -491,6 +573,12 @@ def render_execution(document: Document) -> None:
     )
 
 
+def render_execution_placeholder() -> None:
+    """Render the test column before a PDF is available."""
+    st.subheader("Test Run")
+    st.info("Upload a PDF before running the rule.")
+
+
 def main() -> None:
     """Run the Streamlit application."""
     st.set_page_config(page_title="PDF Rule Studio", layout="wide")
@@ -500,20 +588,29 @@ def main() -> None:
     document = render_sidebar()
 
     if document is None:
-        left_column, right_column = st.columns([1.35, 1])
-        with left_column:
+        pdf_column, editor_column, test_column = st.columns(
+            [1.3, 1, 1],
+            gap="large",
+        )
+        with pdf_column:
             st.info("Upload a text-based PDF to preview pages and configure a rule.")
-        with right_column:
+        with editor_column:
             render_rule_editor(None)
+        with test_column:
+            render_execution_placeholder()
         return
 
     st.caption(
         f"{len(document.pages)} pages · {len(document.sections)} sections · "
         f"{len(document.paragraphs)} paragraphs"
     )
-    pdf_column, editor_column = st.columns([1.35, 1])
+    pdf_column, editor_column, test_column = st.columns(
+        [1.3, 1, 1],
+        gap="large",
+    )
     with editor_column:
         editor_highlights = render_rule_editor(document)
+    with test_column:
         render_execution(document)
     with pdf_column:
         render_pdf_viewer(document, editor_highlights)

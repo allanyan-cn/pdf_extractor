@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pdf_extractor.models import Page, Paragraph, Section
+from pdf_extractor.utils.text import normalize_match_text, strip_footnote_markers
 
 HEADING_PATTERN = re.compile(
     r"^(?:"
@@ -70,7 +71,7 @@ class SectionDetector:
         sections = [
             Section(
                 id=f"s_{index:04d}",
-                title=str(title).strip(),
+                title=strip_footnote_markers(str(title)),
                 level=int(level),
                 start_page=max(1, min(int(page_number), page_count)),
             )
@@ -109,7 +110,7 @@ class SectionDetector:
                 if is_short and (is_pattern or (is_near_top and is_large)):
                     candidates.append(
                         _HeadingCandidate(
-                            paragraph.text,
+                            strip_footnote_markers(paragraph.text),
                             page.page_number,
                             paragraph.bbox.y0,
                             self._infer_level(paragraph.text),
@@ -247,9 +248,9 @@ class SectionDetector:
 
         Estimate the TOC target y coordinate on the start page.
         """
-        normalized_title = " ".join(title.split()).casefold()
+        normalized_title = normalize_match_text(title)
         for paragraph in paragraphs:
-            if " ".join(paragraph.text.split()).casefold() == normalized_title:
+            if normalize_match_text(paragraph.text) == normalized_title:
                 return paragraph.bbox.y0
         if len(toc_item) >= 4 and isinstance(toc_item[3], dict):
             destination = toc_item[3].get("to")

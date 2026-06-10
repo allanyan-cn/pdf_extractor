@@ -13,6 +13,7 @@ import pdfplumber
 import pymupdf
 
 from pdf_extractor.extractor.table_extractor import TableExtractor, _TableCandidate
+from pdf_extractor.utils.text import strip_footnote_markers
 
 YEAR_PATTERN = re.compile(r"^(?:19|20)\d{2}$")
 NUMBER_PATTERN = re.compile(
@@ -80,7 +81,7 @@ def _unique(values: Sequence[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
     for value in values:
-        cleaned = " ".join(value.split())
+        cleaned = strip_footnote_markers(value)
         key = cleaned.casefold()
         if cleaned and key not in seen:
             seen.add(key)
@@ -123,19 +124,23 @@ def _headers_from_page_words(
         for line in candidate_lines
         for word in line
         if (
-            YEAR_PATTERN.fullmatch(str(word["text"]))
+            YEAR_PATTERN.fullmatch(strip_footnote_markers(str(word["text"])))
             and float(word["x0"]) >= value_x0
         )
         or (
-            str(word["text"]).casefold() == "note"
+            strip_footnote_markers(str(word["text"])).casefold() == "note"
             and float(word["x0"]) >= candidate.bbox.x0 - 70
         )
     ]
     column_words.sort(key=lambda word: float(word["x0"]))
-    column_headers = _unique([str(word["text"]) for word in column_words])
+    column_headers = _unique(
+        [strip_footnote_markers(str(word["text"])) for word in column_words]
+    )
 
     note_words = [
-        word for word in column_words if str(word["text"]).casefold() == "note"
+        word
+        for word in column_words
+        if strip_footnote_markers(str(word["text"])).casefold() == "note"
     ]
     label_x1 = (
         float(note_words[0]["x0"]) - 4
@@ -150,10 +155,12 @@ def _headers_from_page_words(
             word
             for word in line
             if float(word["x0"]) >= value_x0
-            and NUMBER_PATTERN.fullmatch(str(word["text"]).replace(" ", ""))
+            and NUMBER_PATTERN.fullmatch(
+                strip_footnote_markers(str(word["text"])).replace(" ", "")
+            )
         ]
         label = " ".join(
-            str(word["text"])
+            strip_footnote_markers(str(word["text"]))
             for word in line
             if float(word["x0"]) < label_x1
         ).strip()

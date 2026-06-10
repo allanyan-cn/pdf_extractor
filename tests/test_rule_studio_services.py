@@ -8,7 +8,7 @@ from pathlib import Path
 import pymupdf
 import pytest
 
-from pdf_extractor.models import Document, Section
+from pdf_extractor.models import BBox, Document, ExecutionReport, ExtractionResult, Section
 from rule_studio.services import (
     document_tree,
     execute_rules,
@@ -20,10 +20,13 @@ from rule_studio.services import (
     parse_uploaded_pdf,
     render_page_png,
     report_payload,
+    result_table_rows,
     resolve_tree_selection,
     rule_to_payload,
     rules_json,
+    scope_for_page,
     section_label,
+    section_for_page,
     validate_rule_payload,
 )
 
@@ -133,13 +136,41 @@ def test_render_page_rejects_out_of_range_page(tmp_path: Path) -> None:
         render_page_png(str(path), 2)
 
 
+def test_result_table_rows_prioritizes_normalized_value() -> None:
+    report = ExecutionReport(
+        results=[
+            ExtractionResult(
+                rule_id="rule_001",
+                value="(5,978)",
+                normalized_value="-5978",
+                source_text="(5,978)",
+                page_number=91,
+                bbox=BBox(1, 2, 3, 4),
+            )
+        ],
+        diagnostics=[],
+    )
+
+    assert result_table_rows(report) == [
+        {
+            "rule_id": "rule_001",
+            "normalized_value": "-5978",
+            "raw_value": "(5,978)",
+            "page": 91,
+            "confidence": None,
+            "source": "(5,978)",
+        }
+    ]
+
+
 def test_load_page_tables_returns_rows_headers_and_bbox(tmp_path: Path) -> None:
     path = materialize_pdf(create_table_pdf_bytes(), "table.pdf", tmp_path)
 
     tables = load_page_tables(str(path), 1)
 
     assert len(tables) == 1
-    assert tables[0].label == "Table 1 · 2 rows × 2 columns"
+    assert tables[0].label == "Table 1 - 2 rows × 2 columns"
+    assert tables[0].summary == "Table 1 - 2 rows × 2 columns"
     assert tables[0].rows[1] == ["Net income", "12.5 billion"]
     assert tables[0].row_headers == ["Net income"]
     assert tables[0].column_headers == ["Item", "Amount"]
@@ -149,6 +180,17 @@ def test_load_page_tables_returns_rows_headers_and_bbox(tmp_path: Path) -> None:
         "x1": 250.0,
         "y1": 110.0,
     }
+
+
+def test_load_page_tables_estimates_columns_for_right_aligned_financial_table() -> None:
+    path = Path("examples/HSBC-250219-annual-report-and-accounts-2024.pdf")
+
+    tables = load_page_tables(str(path), 91)
+
+    assert [table.label for table in tables] == [
+        "Table 1 - 29 rows × 6 columns",
+        "Table 2 - 10 rows × 6 columns",
+    ]
 
 
 def test_document_tree_preserves_section_hierarchy_and_preorder_ids() -> None:
@@ -189,3 +231,34 @@ def test_document_tree_preserves_section_hierarchy_and_preorder_ids() -> None:
     assert resolve_tree_selection(document, section_ids, [0, 1]) == ("s2", 2)
     assert resolve_tree_selection(document, section_ids, []) is None
     assert resolve_tree_selection(document, section_ids, 5) is None
+
+
+def test_scope_for_page_uses_latest_most_specific_toc_entry() -> None:
+    document = Document(
+        "sample.pdf",
+        sections=[
+            Section("s1", "Financial review", 1, 1, 5, path=["Financial review"]),
+            Section(
+                "s2",
+                "Financial summary",
+                2,
+                2,
+                3,
+                parent_id="s1",
+                path=["Financial review", "Financial summary"],
+            ),
+            Section(
+                "s3",
+                "Risk",
+                2,
+                4,
+                5,
+                parent_id="s1",
+                path=["Financial review", "Risk"],
+            ),
+        ],
+    )
+
+    assert section_for_page(document, 3).id == "s2"
+    assert scope_for_page(document, 3) == "Financial review > Financial summary"
+    assert scope_for_page(document, 5) == "Financial review > Risk"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,9 +20,11 @@ from pdf_extractor.parser.pdf_parser import PDFParser
 from pdf_extractor.rules.rule_executor import RuleExecutor
 from pdf_extractor.rules.rule_schema import ExtractionRule
 from pdf_extractor.utils.show_table_structure import (
+    NUMBER_PATTERN,
     _headers_from_page_words,
     _is_useful_candidate,
 )
+from pdf_extractor.utils.text import strip_footnote_markers
 
 
 @dataclass(frozen=True)
@@ -33,12 +36,20 @@ class StudioTable:
     bbox: BBox
     row_headers: list[str]
     column_headers: list[str]
+    column_count: int
 
     @property
     def label(self) -> str:
-        """Return a compact selector label."""
-        columns = max((len(row) for row in self.rows), default=0)
-        return f"Table {self.table_index} · {len(self.rows)} rows × {columns} columns"
+        """Return the stable label and shape shown in the table selector."""
+        return (
+            f"Table {self.table_index} - "
+            f"{len(self.rows)} rows × {self.column_count} columns"
+        )
+
+    @property
+    def summary(self) -> str:
+        """Return a compact structural summary."""
+        return self.label
 
 
 def new_rule_payload(index: int = 1) -> dict[str, Any]:
@@ -164,9 +175,45 @@ def load_page_tables(file_path: str, page_number: int) -> list[StudioTable]:
                     bbox=candidate.bbox,
                     row_headers=row_headers,
                     column_headers=column_headers,
+                    column_count=_table_column_count(
+                        page,
+                        candidate.bbox,
+                        candidate.rows,
+                        row_headers,
+                    ),
                 )
             )
     return tables
+
+
+def _table_column_count(
+    page: Any,
+    bbox: BBox,
+    rows: list[list[Any]],
+    row_headers: list[str],
+) -> int:
+    """Estimate visible columns when pdfplumber captures only one value column."""
+    extracted_count = max((len(row) for row in rows), default=0)
+    words = page.extract_words(use_text_flow=True, keep_blank_chars=False)
+    numeric_x_positions = sorted(
+        float(word["x1"])
+        for word in words
+        if bbox.y0 - 2 <= float(word["top"]) <= bbox.y1 + 2
+        and float(word["x0"]) >= bbox.x0 - 12
+        and NUMBER_PATTERN.fullmatch(
+            re.sub(
+                r"\s+",
+                "",
+                strip_footnote_markers(str(word["text"])),
+            )
+        )
+    )
+    numeric_columns: list[float] = []
+    for x0 in numeric_x_positions:
+        if not numeric_columns or abs(x0 - numeric_columns[-1]) > 12:
+            numeric_columns.append(x0)
+    coordinate_count = len(numeric_columns) + (1 if row_headers else 0)
+    return max(extracted_count, coordinate_count)
 
 
 def section_label(document: Document, section_id: str | None) -> str:
@@ -178,6 +225,30 @@ def section_label(document: Document, section_id: str | None) -> str:
     if section is None:
         return ""
     return " > ".join(section.path or [section.title])
+
+
+def section_for_page(document: Document, page_number: int) -> Any | None:
+    """Return the latest TOC section active at a physical page."""
+    active = [
+        (index, section)
+        for index, section in enumerate(document.sections)
+        if section.start_page <= page_number
+    ]
+    if not active:
+        return None
+    return max(
+        active,
+        key=lambda item: (
+            item[1].start_page,
+            item[0],
+        ),
+    )[1]
+
+
+def scope_for_page(document: Document, page_number: int) -> str | None:
+    """Return the full TOC path active at a physical page."""
+    section = section_for_page(document, page_number)
+    return section_label(document, section.id) if section is not None else None
 
 
 def document_tree(document: Document) -> tuple[list[dict[str, Any]], list[str]]:
@@ -298,6 +369,25 @@ def report_payload(document: Document, report: ExecutionReport) -> dict[str, Any
         "results": [result.to_dict() for result in report.results],
         "diagnostics": [diagnostic.to_dict() for diagnostic in report.diagnostics],
     }
+
+
+def result_table_rows(report: ExecutionReport) -> list[dict[str, Any]]:
+    """Build user-facing result rows with normalized values first."""
+    return [
+        {
+            "rule_id": result.rule_id,
+            "normalized_value": (
+                result.normalized_value
+                if result.normalized_value is not None
+                else result.value
+            ),
+            "raw_value": result.value,
+            "page": result.page_number,
+            "confidence": result.confidence,
+            "source": result.source_text,
+        }
+        for result in report.results
+    ]
 
 
 def report_json(document: Document, report: ExecutionReport) -> str:

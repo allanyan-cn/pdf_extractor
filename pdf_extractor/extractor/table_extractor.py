@@ -12,6 +12,7 @@ import pdfplumber
 
 from pdf_extractor.models import BBox, Document, ExtractionResult, Paragraph
 from pdf_extractor.rules.rule_schema import ExtractionRule
+from pdf_extractor.utils.text import strip_footnote_markers
 
 BORDERLESS_TABLE_SETTINGS = {
     "vertical_strategy": "text",
@@ -317,7 +318,13 @@ class TableExtractor:
 
         Clean cell text by normalizing None and extra whitespace.
         """
-        return " ".join(cell.split()) if isinstance(cell, str) else "" if cell is None else cell
+        return (
+            strip_footnote_markers(cell)
+            if isinstance(cell, str)
+            else ""
+            if cell is None
+            else cell
+        )
 
     @classmethod
     def _deduplicate_candidates(cls, candidates: list[_TableCandidate]) -> list[_TableCandidate]:

@@ -409,6 +409,49 @@ def test_table_cell_extractor_selects_source_paragraph_from_llm_row_header() -> 
     assert paragraph == paragraphs[2]
 
 
+def test_word_lines_keep_superscript_footnote_in_visual_order() -> None:
+    words = [
+        {"text": "ratio8", "x0": 97.3, "x1": 113.4, "top": 517.3, "bottom": 525.8},
+        {"text": "Dividend", "x0": 45.1, "x1": 72.4, "top": 518.8, "bottom": 525.8},
+        {"text": "payout", "x0": 74.3, "x1": 95.3, "top": 518.8, "bottom": 525.8},
+    ]
+
+    lines = TableCellExtractor._word_lines(words)
+
+    assert lines[0]["text"] == "Dividend payout ratio8"
+
+
+def test_table_cell_percentage_uses_preceding_unit_row() -> None:
+    rule = ExtractionRule(
+        "ratio",
+        "Extract ratio",
+        None,
+        [],
+        "percentage",
+        "Dividend payout ratio",
+        table_selector={"row_index": 3, "column_index": 1},
+    )
+    table = _TableCandidate(
+        [["2024"], ["%"], ["50"]],
+        [1],
+        [BBox(10, 10, 50, 40)],
+        [100],
+        "local",
+    )
+
+    value = TableCellExtractor._value_with_adjacent_unit(rule, table, 2, 0)
+
+    assert value == "50%"
+
+
+def test_table_cells_remove_footnote_markers() -> None:
+    rows = TableExtractor._repair_merged_cells(
+        [["20221", "Revenue¹"], ["Dividend payout ratio8", "50²"]]
+    )
+
+    assert rows == [["2022", "Revenue"], ["Dividend payout ratio", "50"]]
+
+
 def test_table_extractor_uses_optional_llm_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
